@@ -25,9 +25,11 @@ internal static class Program
             return command switch
             {
                 "launch" => Launch(),
+                "package-debugger" => PackageDebugger(arguments.Skip(1).ToArray()),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
                 "run-all" => await RunAllAsync(),
+                "dev" => await UserscriptDevelopment.RunAsync(arguments.Skip(1).ToArray()),
                 "list" => ListScripts(),
                 "mcp" => await ClaudexMcpServer.RunAsync(),
                 "reload-worker" => await ReloadWorkerAsync(),
@@ -55,7 +57,7 @@ internal static class Program
     private static int Launch()
     {
         if (IsCodexRunning())
-            return Fail("Codex is already running. Quit it completely before the first controlled launch.");
+            return ActivateRunningCodex();
         if (OperatingSystem.IsWindows()) return LaunchWindows();
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
         return Fail("Controlled launch currently supports Windows and macOS.");
@@ -66,28 +68,40 @@ internal static class Program
         var package = FindCodexPackage();
         var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
         var switches = ChromiumSwitches();
-        var environment = string.Join('\0', new[]
+        var environment = BuildWindowsEnvironmentBlock(new[]
         {
             "BUILD_FLAVOR=dev",
             $"CODEX_ELECTRON_USER_DATA_PATH={profile}",
-            $"CODEX_ELECTRON_CHROMIUM_SWITCHES={switches}",
-            string.Empty,
-            string.Empty
+            $"CODEX_ELECTRON_CHROMIUM_SWITCHES={switches}"
         });
 
         var debugSettings = (IPackageDebugSettings)new PackageDebugSettings();
         var environmentPointer = Marshal.StringToHGlobalUni(environment);
+        var launcher = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
+        var debuggerCommandLine = $"\"{launcher}\" package-debugger";
         uint processId;
+        var debuggingEnabled = false;
+        Exception? launchFailure = null;
         try
         {
-            Marshal.ThrowExceptionForHR(debugSettings.EnableDebugging(package.FullName, null, environmentPointer));
+            ThrowForHResult(debugSettings.EnableDebugging(package.FullName, debuggerCommandLine, environmentPointer), "enable Codex package debugging");
+            debuggingEnabled = true;
             var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
-            Marshal.ThrowExceptionForHR(activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out processId));
+            ThrowForHResult(activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out processId), "activate Codex");
+        }
+        catch (Exception exception)
+        {
+            launchFailure = exception;
+            throw;
         }
         finally
         {
             Marshal.FreeHGlobal(environmentPointer);
-            Marshal.ThrowExceptionForHR(debugSettings.DisableDebugging(package.FullName));
+            if (debuggingEnabled)
+            {
+                var disableResult = debugSettings.DisableDebugging(package.FullName);
+                if (launchFailure is null) ThrowForHResult(disableResult, "disable Codex package debugging");
+            }
         }
 
         Console.WriteLine($"Started controlled Codex (PID {processId}).");
@@ -120,6 +134,36 @@ internal static class Program
         ["remote-debugging-port"] = DevToolsPort.ToString(),
         ["remote-debugging-address"] = "127.0.0.1"
     });
+
+    private static string BuildWindowsEnvironmentBlock(IEnumerable<string> entries) =>
+        string.Join('\0', entries.Order(StringComparer.OrdinalIgnoreCase)) + "\0\0";
+
+    private static int PackageDebugger(string[] arguments)
+    {
+        if (!OperatingSystem.IsWindows()) return Fail("package-debugger is Windows-only.");
+        var threadId = ReadDebuggerId(arguments, "-tid");
+        using var thread = OpenThread(ThreadAccess.SuspendResume, false, threadId);
+        if (thread.IsInvalid) throw new InvalidOperationException($"Could not open suspended Codex thread {threadId} (Win32 error {Marshal.GetLastPInvokeError()}).");
+        var previousSuspendCount = ResumeThread(thread);
+        if (previousSuspendCount == uint.MaxValue)
+            throw new InvalidOperationException($"Could not resume suspended Codex thread {threadId} (Win32 error {Marshal.GetLastPInvokeError()}).");
+        return 0;
+    }
+
+    private static uint ReadDebuggerId(string[] arguments, string option)
+    {
+        for (var index = 0; index + 1 < arguments.Length; index++)
+            if (arguments[index].Equals(option, StringComparison.OrdinalIgnoreCase)
+                && uint.TryParse(arguments[index + 1], out var value)) return value;
+        throw new ArgumentException($"package-debugger requires {option} <id>.");
+    }
+
+    private static void ThrowForHResult(int result, string operation)
+    {
+        if (result >= 0) return;
+        var detail = Marshal.GetExceptionForHR(result)?.Message ?? "Unknown Windows error.";
+        throw new InvalidOperationException($"Could not {operation} (HRESULT 0x{result:X8}): {detail}");
+    }
 
     private static async Task<int> StatusAsync()
     {
@@ -256,44 +300,10 @@ internal static class Program
             })()
             """;
 
-        var value = await EvaluateAsync(expression, TimeSpan.FromSeconds(120));
+        var value = await RendererDevTools.EvaluateStringAsync(expression, TimeSpan.FromSeconds(120));
         using var document = JsonDocument.Parse(value);
         var logs = document.RootElement.GetProperty("logs").EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToArray();
         return new ScriptResult(logs, document.RootElement.GetProperty("result").Clone());
-    }
-
-    private static async Task<string> EvaluateAsync(string expression, TimeSpan timeout)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-        var page = SelectCodexPage(await ReadTargetsAsync(http))
-            ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");
-        using var socket = new ClientWebSocket();
-        await socket.ConnectAsync(new Uri(page.WebSocketDebuggerUrl), CancellationToken.None);
-        var command = JsonSerializer.Serialize(new
-        {
-            id = 1,
-            method = "Runtime.evaluate",
-            @params = new { expression, awaitPromise = true, returnByValue = true }
-        });
-        await socket.SendAsync(Encoding.UTF8.GetBytes(command), WebSocketMessageType.Text, true, CancellationToken.None);
-
-        using var cancellation = new CancellationTokenSource(timeout);
-        while (true)
-        {
-            var response = await ReceiveMessageAsync(socket, cancellation.Token);
-            using var document = JsonDocument.Parse(response);
-            var root = document.RootElement;
-            if (!root.TryGetProperty("id", out var id) || id.GetInt32() != 1) continue;
-            if (!root.TryGetProperty("result", out var evaluation))
-                throw new InvalidOperationException($"Codex rejected the script: {response}");
-            if (evaluation.TryGetProperty("exceptionDetails", out var exception))
-                throw new InvalidOperationException($"Codex rejected the script: {exception.GetRawText()}");
-            if (!evaluation.TryGetProperty("result", out var remote))
-                throw new InvalidOperationException($"Codex returned no script result: {response}");
-            if (!remote.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
-                throw new InvalidOperationException($"Unexpected Codex script response: {response}");
-            return value.GetString()!;
-        }
     }
 
     private static int InstallShortcut()
@@ -404,6 +414,8 @@ internal static class Program
     {
         Directory.CreateDirectory(UserScriptDirectory);
         if (DevToolsListUri.Port != DevToolsPort) throw new InvalidOperationException("DevTools endpoint configuration failed.");
+        var environment = BuildWindowsEnvironmentBlock(["Z=value", "a=value"]);
+        if (environment != "a=value\0Z=value\0\0") throw new InvalidOperationException("Windows environment block construction failed.");
         const string metadataSmoke = "// ==ClaudexUserScript==\n// @name Test\n// @id test\n// @version 1.0.0\n// @description Test script.\n// @run-at renderer-ready\n// @platform windows, macos\n// @codex-tested 1.2.3\n// @grant codex-request\n// ==/ClaudexUserScript==\nreturn true;";
         var parsed = UserscriptMetadata.Parse(metadataSmoke);
         if (parsed.Id != "test" || !parsed.TestedCodexVersions.Contains("1.2.3")) throw new InvalidOperationException("Userscript metadata parsing failed.");
@@ -451,6 +463,20 @@ internal static class Program
         finally { process.Dispose(); }
     });
 
+    private static int ActivateRunningCodex()
+    {
+        if (!OperatingSystem.IsWindows())
+            return Fail("Codex is already running, but foreground activation is currently Windows-only.");
+
+        var package = FindCodexPackage();
+        var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
+        ThrowForHResult(
+            activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _),
+            "activate the running Codex application");
+        Console.WriteLine("Activated the running Codex application.");
+        return 0;
+    }
+
     private static string FindCodexExecutable()
     {
         var package = FindCodexPackage();
@@ -481,6 +507,7 @@ internal static class Program
         Console.WriteLine("claudex-yourself list");
         Console.WriteLine("claudex-yourself run <name-or-path>");
         Console.WriteLine("claudex-yourself run-all");
+        Console.WriteLine("claudex-yourself dev <userscript-path> [--autoload]");
         Console.WriteLine("claudex-yourself reload");
         Console.WriteLine("claudex-yourself autoload <script-name> on|off");
         Console.WriteLine("claudex-yourself configure codex");
@@ -500,6 +527,23 @@ internal static class Program
     private sealed record CodexPackage(string FullName, string FamilyName, string InstallLocation);
 
     [Flags] private enum ActivateOptions : uint { None = 0 }
+    [Flags] private enum ThreadAccess : uint { SuspendResume = 0x0002 }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeThreadHandle OpenThread(ThreadAccess desiredAccess, [MarshalAs(UnmanagedType.Bool)] bool inheritHandle, uint threadId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(SafeThreadHandle thread);
+
+    private sealed class SafeThreadHandle : Microsoft.Win32.SafeHandles.SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SafeThreadHandle() : base(true) { }
+        protected override bool ReleaseHandle() => CloseHandle(handle);
+    }
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
     [ComImport, Guid("F27C3930-8029-4AD1-94E3-3DBA417810C1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     private interface IPackageDebugSettings
     {

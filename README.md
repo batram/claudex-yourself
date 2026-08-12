@@ -58,6 +58,28 @@ The per-user script directory is printed by `status` and `list`. `run-all` execu
 
 `autoload <name> on|off` controls whether a per-user script runs after the next controlled launch. The launcher starts a detached worker, waits up to 60 seconds for the renderer, and records each script result without delaying the launcher itself. `list` marks enabled entries with `[autoload]`.
 
+### In-app switches
+
+`userscript_settings.js` adds a **User scripts** page to Codex Settings using only renderer JavaScript. It stores preferences in Codex `localStorage`; it does not read the filesystem or modify `autoload.json`.
+
+For a script to appear and remain switchable, copy it and `userscript_settings.js` into the per-user script directory and leave all of them enabled for autoload. A selectable script still executes at renderer startup, but its controller installs only when its in-app preference is enabled. Switches apply immediately because selectable scripts provide reversible `install()` and `uninstall()` operations.
+
+The settings userscript currently catalogs:
+
+- `sidebar_usage`
+- `hide_invite_a_friend`
+- `hide_pets_button`
+
+### Live development
+
+Develop a workspace userscript with automatic validation, atomic publishing, and renderer reload on every save:
+
+```powershell
+claudex-yourself dev .\scripts\userscript_settings.js --autoload
+```
+
+The initial run and every subsequent save parse the metadata, require `@id` to match the filename, publish the source into the per-user script directory, and execute it in the controlled renderer. `--autoload` also enables the script for future controlled launches. If execution fails, the previous installed source is restored and the watcher remains active for the next edit. Press `Ctrl+C` to stop watching.
+
 Scripts are async function bodies with a small `claudex` API:
 
 ```javascript
@@ -105,6 +127,15 @@ claudex-yourself reload
 ```
 
 It exposes tools to inspect, read, write, run, mark userscripts for autoload, compare compatibility, and record an explicitly verified Codex build. Script files are read fresh on every call, so changing JavaScript requires no MCP restart. `get_autoload_status` reports the previous launch worker result.
+
+Renderer development tools are also available through MCP:
+
+- `inspect_renderer` returns bounded selector/text matches with visibility, bounds, attributes, HTML, and ancestors.
+- `interact_renderer` performs trusted CDP clicks and key presses.
+- `capture_renderer` saves a viewport or selected-element PNG under the Claudex state directory.
+- `evaluate_renderer` runs diagnostic JavaScript with serialized output capped at 20,000 characters.
+- `get_userscript_runtime_status` reports registered controllers and whether they are installed and reversible.
+- `search_renderer_sources` searches loaded JavaScript bundles and returns bounded source snippets.
 
 `reload_mcp` starts a detached worker and returns before Codex replaces the MCP transport. After the server reconnects, `get_reload_status` reports the worker's verified result. This lets Codex control the same DevTools userscript host that is controlling Codex.
 

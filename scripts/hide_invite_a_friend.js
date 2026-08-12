@@ -1,22 +1,21 @@
 // ==ClaudexUserScript==
-// @name          Hide pets button
-// @id            hide_pets_button
+// @name          Hide Invite a friend
+// @id            hide_invite_a_friend
 // @version       1.0.0
-// @description   Hides the Show pet / Hide pet account-menu entry.
+// @description   Hides the Invite a friend account-menu entry.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
 // @grant         codex-request
 // ==/ClaudexUserScript==
-const stateKey = Symbol.for("claudex-yourself.hide-pets-button");
+const stateKey = Symbol.for("claudex-yourself.hide-invite-a-friend");
 const previous = window[stateKey];
 previous?.uninstall?.();
 
-const scriptId = "hide_pets_button";
+const scriptId = "hide_invite_a_friend";
 const preferencesKey = "claudex-yourself.userscripts.v1";
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
 
-const labels = new Set(["show pet", "hide pet"]);
 const hideMatching = root => {
   const candidates = [];
   if (root instanceof Element && root.matches("[role='menuitem']")) candidates.push(root);
@@ -25,9 +24,9 @@ const hideMatching = root => {
   }
   let hidden = 0;
   for (const element of candidates) {
-    if (!labels.has(element.textContent?.trim().toLowerCase())) continue;
+    if (element.textContent?.trim().toLowerCase() !== "invite a friend") continue;
     element.style.setProperty("display", "none", "important");
-    element.dataset.claudexHidePets = "true";
+    element.dataset.claudexHideInvite = "true";
     hidden++;
   }
   return hidden;
@@ -50,9 +49,9 @@ const install = () => {
 const uninstall = () => {
   observer?.disconnect();
   observer = undefined;
-  for (const element of document.querySelectorAll("[data-claudex-hide-pets='true']")) {
+  for (const element of document.querySelectorAll("[data-claudex-hide-invite='true']")) {
     element.style.removeProperty("display");
-    delete element.dataset.claudexHidePets;
+    delete element.dataset.claudexHideInvite;
   }
   return { installed: false };
 };

@@ -78,6 +78,12 @@ internal static class ClaudexMcpServer
                 "mark_userscript_tested" => await MarkTestedAsync(RequiredName(arguments)),
                 "set_userscript_autoload" => SetAutoload(RequiredName(arguments), arguments["enabled"]?.GetValue<bool>() ?? throw new McpException(-32602, "enabled is required.")),
                 "get_autoload_status" => await AutoloadScripts.ReadStatusAsync(),
+                "inspect_renderer" => await RendererDevTools.InspectAsync(OptionalString(arguments, "selector"), OptionalString(arguments, "text"), arguments["max_results"]?.GetValue<int>() ?? 10),
+                "interact_renderer" => await InteractRendererAsync(arguments),
+                "capture_renderer" => await RendererDevTools.CaptureScreenshotAsync(OptionalString(arguments, "selector")),
+                "evaluate_renderer" => await RendererDevTools.EvaluateForInspectionAsync(RequiredString(arguments, "expression")),
+                "get_userscript_runtime_status" => await RuntimeStatusAsync(),
+                "search_renderer_sources" => await RendererDevTools.SearchLoadedSourcesAsync(RequiredString(arguments, "query"), arguments["max_results"]?.GetValue<int>() ?? 10),
                 "reload_mcp" => ScheduleReload(),
                 "get_reload_status" => await ReadReloadStatusAsync(),
                 _ => throw new McpException(-32602, $"Unknown tool: {name}")
@@ -213,6 +219,24 @@ internal static class ClaudexMcpServer
         return new { name = setting.Name, enabled = setting.Enabled };
     }
 
+    private static async Task<object> InteractRendererAsync(JsonObject arguments)
+    {
+        var action = RequiredString(arguments, "action");
+        return action switch
+        {
+            "click" => await RendererDevTools.ClickAsync(OptionalString(arguments, "selector"), OptionalString(arguments, "text")),
+            "press_key" => await RendererDevTools.PressKeyAsync(RequiredString(arguments, "key"),
+                arguments["modifiers"]?.AsArray().Select(node => node?.GetValue<string>() ?? string.Empty).ToArray() ?? []),
+            _ => throw new McpException(-32602, "action must be 'click' or 'press_key'.")
+        };
+    }
+
+    private static async Task<object> RuntimeStatusAsync()
+    {
+        const string expression = "(() => { const registry=window[Symbol.for('claudex-yourself.userscript-registry')]; if(!(registry instanceof Map)) return []; return [...registry.entries()].map(([id,controller]) => ({id,installed:Boolean(controller?.installed),reversible:typeof controller?.install==='function'&&typeof controller?.uninstall==='function'})); })()";
+        return await RendererDevTools.EvaluateForInspectionAsync(expression);
+    }
+
     private static object ScheduleReload()
     {
         Directory.CreateDirectory(Program.StateDirectory);
@@ -230,6 +254,7 @@ internal static class ClaudexMcpServer
     }
 
     private static string RequiredName(JsonObject arguments) => NormalizeName(RequiredString(arguments, "name"));
+    private static string? OptionalString(JsonObject arguments, string property) => arguments[property]?.GetValue<string>() is { Length: > 0 } value ? value : null;
     private static string RequiredString(JsonObject arguments, string property) => arguments[property]?.GetValue<string>() is { Length: > 0 } value
         ? value
         : throw new McpException(-32602, $"{property} is required.");
@@ -267,6 +292,12 @@ internal static class ClaudexMcpServer
         Tool("mark_userscript_tested", "After explicit behavioural confirmation, add the exact installed Codex version to one userscript's metadata header.", new { name = StringSchema("User script name without a path.") }, ["name"]),
         Tool("set_userscript_autoload", "Enable or disable one per-user script during controlled Codex launch.", new { name = StringSchema("User script name without a path."), enabled = new { type = "boolean" } }, ["name", "enabled"]),
         Tool("get_autoload_status", "Read the last controlled-launch autoload worker result.", new { }, readOnly: true),
+        Tool("inspect_renderer", "Inspect bounded live Codex renderer DOM matches by CSS selector and/or exact visible text.", new { selector = StringSchema("Optional CSS selector."), text = StringSchema("Optional exact element text."), max_results = new { type = "integer", minimum = 1, maximum = 50, @default = 10 } }, readOnly: true),
+        Tool("interact_renderer", "Send trusted CDP input to the controlled renderer. Click a visible selector/text match or press a key with modifiers.", new { action = new { type = "string", @enum = new[] { "click", "press_key" } }, selector = StringSchema("CSS selector for click."), text = StringSchema("Optional exact text filter for click."), key = StringSchema("CDP key value for press_key."), modifiers = new { type = "array", items = new { type = "string", @enum = new[] { "alt", "ctrl", "meta", "shift" } } } }, ["action"]),
+        Tool("capture_renderer", "Capture the visible renderer or one CSS-selected element to a local PNG.", new { selector = StringSchema("Optional CSS selector to capture.") }),
+        Tool("evaluate_renderer", "Evaluate diagnostic JavaScript in the controlled renderer with serialized bounded output.", new { expression = StringSchema("JavaScript expression, up to 20000 characters.") }, ["expression"]),
+        Tool("get_userscript_runtime_status", "Read registered userscript controller installation and reversibility state from the live renderer.", new { }, readOnly: true),
+        Tool("search_renderer_sources", "Search currently loaded renderer JavaScript sources and return bounded snippets around exact text matches.", new { query = StringSchema("Literal source text to find."), max_results = new { type = "integer", minimum = 1, maximum = 50, @default = 10 } }, ["query"], readOnly: true),
         Tool("reload_mcp", "Schedule a detached verified Codex MCP reload. This MCP connection is replaced; call get_reload_status after reconnection.", new { }),
         Tool("get_reload_status", "Read the detached MCP reload worker's last status.", new { }, readOnly: true)
     ];
