@@ -1,5 +1,5 @@
 param(
-    [string]$AssemblyPath = (Join-Path $PSScriptRoot '..\bin\Release\net10.0\claudex-yourself.dll'),
+    [string]$AssemblyPath = (Join-Path $PSScriptRoot '..\bin\claudex-yourself.dll'),
     [switch]$LiveRenderer
 )
 
@@ -19,9 +19,26 @@ if ($LiveRenderer) {
     $requestLines += '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"search_renderer_sources","arguments":{"query":"Usage remaining","max_results":5}}}'
 }
 
-$responseItems = @($requestLines | & dotnet $AssemblyPath mcp | ForEach-Object { $_ | ConvertFrom-Json })
+$processInfo = [Diagnostics.ProcessStartInfo]::new('dotnet')
+$processInfo.UseShellExecute = $false
+$processInfo.RedirectStandardInput = $true
+$processInfo.RedirectStandardOutput = $true
+$processInfo.RedirectStandardError = $true
+$processInfo.Arguments = '"' + $AssemblyPath + '" mcp'
+$serverProcess = [Diagnostics.Process]::Start($processInfo)
+foreach ($requestLine in $requestLines) { $serverProcess.StandardInput.WriteLine($requestLine) }
+$serverProcess.StandardInput.Close()
+$responseItems = @()
+while (-not $serverProcess.StandardOutput.EndOfStream) {
+    $responseItems += $serverProcess.StandardOutput.ReadLine() | ConvertFrom-Json
+}
+$standardError = $serverProcess.StandardError.ReadToEnd()
+$serverProcess.WaitForExit()
+if ($serverProcess.ExitCode -ne 0) { throw "MCP server exited $($serverProcess.ExitCode): $standardError" }
 if ($responseItems.Count -ne $requestLines.Count) { throw "Expected $($requestLines.Count) responses; received $($responseItems.Count)." }
 if ($responseItems | Where-Object error) { throw 'MCP smoke test returned an error response.' }
+$expectedIds = (1..$requestLines.Count) -join ','
+if (($responseItems.id -join ',') -ne $expectedIds) { throw "Expected response IDs $expectedIds; received $($responseItems.id -join ',')." }
 
 $toolNames = @($responseItems[1].result.tools | ForEach-Object name)
 $requiredTools = @('inspect_renderer', 'interact_renderer', 'capture_renderer', 'evaluate_renderer', 'get_userscript_runtime_status', 'search_renderer_sources')

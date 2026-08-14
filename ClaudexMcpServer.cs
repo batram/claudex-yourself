@@ -13,6 +13,7 @@ internal static class ClaudexMcpServer
     {
         while (await Console.In.ReadLineAsync() is { } line)
         {
+            line = line.TrimStart('\uFEFF');
             if (string.IsNullOrWhiteSpace(line)) continue;
             JsonObject? request = null;
             try
