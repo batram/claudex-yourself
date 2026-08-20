@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.1.0
+// @version       1.2.0
 // @description   Shows all available Codex usage limits above the profile row.
 // @run-at        renderer-ready
 // @platform      windows, macos
@@ -40,11 +40,13 @@ const resetLabel = timestamp => {
   const date = new Date(timestamp * 1000);
   const now = new Date();
   const sameDay = date.toDateString() === now.toDateString();
-  return new Intl.DateTimeFormat(undefined, sameDay
-    ? { hour:"numeric", minute:"2-digit" }
-    : { month:"short", day:"numeric" }).format(date);
+  if (sameDay) return new Intl.DateTimeFormat(undefined, { hour:"numeric", minute:"2-digit" }).format(date);
+  const resetDate = new Intl.DateTimeFormat(undefined, { month:"short", day:"numeric" }).format(date);
+  const weekday = new Intl.DateTimeFormat(undefined, { weekday:"short" }).format(date);
+  return `${resetDate}, ${weekday}`;
 };
 const shortName = name => name === "GPT-5.3-Codex-Spark" ? "Codex Spark" : name;
+const isSparkLimit = name => name === "GPT-5.3-Codex-Spark" || name === "Codex Spark";
 const escapeHtml = value => String(value).replace(/[&<>"']/g, character => ({
   "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"
 })[character]);
@@ -62,7 +64,9 @@ const normalizeLimit = (name, limit) => {
 const normalizeUsage = data => {
   const limits = [normalizeLimit("General", data.rate_limit)];
   if (data.code_review_rate_limit) limits.push(normalizeLimit("Code review", data.code_review_rate_limit));
-  for (const item of data.additional_rate_limits || []) limits.push(normalizeLimit(item.limit_name, item.rate_limit));
+  for (const item of data.additional_rate_limits || []) {
+    if (!isSparkLimit(item.limit_name)) limits.push(normalizeLimit(item.limit_name, item.rate_limit));
+  }
   const credits = data.credits?.has_credits ? data.credits.balance : null;
   return { plan:data.plan_type || "", limits:limits.filter(Boolean), credits, updatedAt:Date.now() };
 };
@@ -82,7 +86,7 @@ const render = (data, stale = false) => {
     return;
   }
   const plan = data.plan ? data.plan.replace(/lite$/i, "").replace(/^./, value => value.toUpperCase()) : "";
-  const rows = data.limits.map(limit => `
+  const rows = data.limits.filter(limit => !isSparkLimit(limit.name)).map(limit => `
     <div class="claudex-usage-group">
       <div class="claudex-usage-name">${escapeHtml(limit.name)}</div>
       ${limit.windows.map(value => `
