@@ -9,5 +9,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Content Include="scripts\**\*.js" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="update\WindowsPackage.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

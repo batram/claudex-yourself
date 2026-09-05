@@ -41,7 +41,7 @@ $expectedIds = (1..$requestLines.Count) -join ','
 if (($responseItems.id -join ',') -ne $expectedIds) { throw "Expected response IDs $expectedIds; received $($responseItems.id -join ',')." }
 
 $toolNames = @($responseItems[1].result.tools | ForEach-Object name)
-$requiredTools = @('inspect_renderer', 'interact_renderer', 'capture_renderer', 'evaluate_renderer', 'get_userscript_runtime_status', 'search_renderer_sources')
+$requiredTools = @('inspect_renderer', 'interact_renderer', 'capture_renderer', 'evaluate_renderer', 'get_userscript_runtime_status', 'search_renderer_sources', 'check_codex_update', 'get_codex_update_status', 'install_codex_update')
 foreach ($toolName in $requiredTools) {
     if ($toolName -notin $toolNames) { throw "Missing MCP tool: $toolName" }
 }

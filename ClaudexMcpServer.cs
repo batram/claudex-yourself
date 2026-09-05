@@ -70,6 +70,9 @@ internal static class ClaudexMcpServer
             object? value = name switch
             {
                 "claudex_status" => await StatusAsync(),
+                "check_codex_update" => await CodexUpdates.CheckAsync(),
+                "get_codex_update_status" => await CodexUpdates.ReadStatusAsync(),
+                "install_codex_update" => await CodexUpdates.ScheduleAsync(),
                 "list_userscripts" => ListScripts(),
                 "read_userscript" => await ReadScriptAsync(RequiredName(arguments)),
                 "write_userscript" => await WriteScriptAsync(RequiredName(arguments), RequiredString(arguments, "source"), arguments["overwrite"]?.GetValue<bool>() ?? false),
@@ -284,6 +287,9 @@ internal static class ClaudexMcpServer
     private static readonly object[] Tools =
     [
         Tool("claudex_status", "Check whether the controlled Codex renderer is reachable.", new { }, readOnly: true),
+        Tool("check_codex_update", "Check the official stable Windows Codex release manifest and installed package version; does not install or close Codex.", new { }, readOnly: true),
+        Tool("get_codex_update_status", "Read the detached Codex updater's persisted progress or failure.", new { }, readOnly: true),
+        Tool("install_codex_update", "Update and restart controlled Codex on Windows. Downloads and validates the signed package, requests normal quit, waits for all package processes to exit, installs, verifies registration, and relaunches in controlled mode. This closes Codex windows and interrupts active work; invoke only when the user requests the update/restart.", new { }),
         Tool("list_userscripts", "List explicit per-user scripts and bundled scripts.", new { }, readOnly: true),
         Tool("read_userscript", "Read one per-user JavaScript userscript before changing or running it.", new { name = StringSchema("User script name without a path.") }, ["name"], readOnly: true),
         Tool("write_userscript", "Create or explicitly replace one per-user JavaScript userscript.", new { name = StringSchema("User script name without a path."), source = StringSchema("Async JavaScript function body using the claudex API."), overwrite = new { type = "boolean" } }, ["name", "source"]),

@@ -42,6 +42,25 @@ Quit Codex completely before the first controlled launch:
 
 Windows activation uses the installed Codex package. macOS launch looks for `Codex.app` in `/Applications` and `~/Applications` and starts its executable with the same isolated control configuration.
 
+### Windows updates in controlled mode
+
+Codex's native updater is disabled for its `dev` build flavor, which the controlled launcher needs for the DevTools endpoint. Claudex supplies a separate **Updates** panel during controlled Windows launches. It checks OpenAI's stable release manifest on startup and every 15 minutes. Select **Update and restart now** to download and stage the signed MSIX, quit Codex normally, install, verify the registered version, and reopen in controlled mode with userscripts restored. Active work can be interrupted by the restart; Codex's normal quit confirmation remains in effect.
+
+The updater runs outside Codex's package/job lifetime. It waits until no processes have the Codex package identity for two continuous seconds before registration. Cancelling quit or leaving a process running aborts installation after 60 seconds. It retries only package-in-use errors, at most twice, and records failures in `%APPDATA%\claudex-yourself\updates\status.json`. It does not force-kill Codex or change Windows package permissions. OpenAI's downloaded package identity, publisher, architecture, and exact manifest version must match before Windows validates its signature during staging. A mismatch between the release feed and stable download fails before Codex closes.
+
+The panel acknowledges clicks immediately, keeps the install action disabled until the worker responds, and shows download progress. Release checks run in the background so they do not block progress updates. The launcher keeps its controlled startup environment active until the main Codex renderer and preload bridge are ready, then restores normal Windows package debugging settings. Update completion is recorded only after that readiness check; activating an ordinary Codex window is insufficient. The first installation attempt shares the existing shutdown quiet period instead of adding a second fixed delay.
+
+If Windows has already staged the exact target version (for example, after a failed native update), the updater validates that protected package's manifest and registers it after shutdown. It uses the normal user's registered package location; it does not require an administrator query of other users' packages. This also handles the case where OpenAI's stable download temporarily trails the Store manifest. Without an exact staged package or a matching download, it reports the mismatch and leaves Codex running.
+
+```powershell
+claudex-yourself update check     # Inspect installed and available package versions
+claudex-yourself update prepare   # Download, validate, and stage; leave Codex running
+claudex-yourself update install   # Download if needed, quit, install, and restart controlled Codex
+claudex-yourself update status    # Read persisted progress or failure
+```
+
+The MCP equivalents are `check_codex_update`, `install_codex_update`, and `get_codex_update_status`. Installation requires a reachable controlled renderer for graceful quit. Ordinary Codex launches keep their normal behavior. This companion updater currently supports the stable `OpenAI.Codex` Windows package on x64 and Arm64; macOS updating remains unchanged. The update panel is a reversible registered userscript (`codex_updates`), loaded by the launcher's companion worker rather than the per-user autoload list. No new Codex build is marked tested just because installation succeeds.
+
 ## Userscripts
 
 Run a bundled script by name or any explicit JavaScript file:

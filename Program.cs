@@ -34,6 +34,9 @@ internal static class Program
                 "mcp" => await ClaudexMcpServer.RunAsync(),
                 "reload-worker" => await ReloadWorkerAsync(),
                 "autoload-worker" => await AutoloadScripts.RunWorkerAsync(),
+                "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
+                "update-worker" => await CodexUpdates.RunWorkerAsync(),
+                "update-watch" => await CodexUpdates.WatchAsync(),
                 "autoload" => arguments.Length == 3
                     ? SetAutoload(arguments[1], arguments[2])
                     : Fail("autoload requires: <script-name> on|off"),
@@ -54,10 +57,14 @@ internal static class Program
         }
     }
 
-    private static int Launch()
+    internal static int Launch(bool requireControlled = false)
     {
         if (IsCodexRunning())
+        {
+            if (requireControlled)
+                RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
             return ActivateRunningCodex();
+        }
         if (OperatingSystem.IsWindows()) return LaunchWindows();
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
         return Fail("Controlled launch currently supports Windows and macOS.");
@@ -88,6 +95,9 @@ internal static class Program
             debuggingEnabled = true;
             var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
             ThrowForHResult(activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out processId), "activate Codex");
+            // Activation success is not renderer readiness. Keep the launch environment in
+            // effect through startup; disabling it immediately can race package activation.
+            RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         }
         catch (Exception exception)
         {
@@ -106,6 +116,7 @@ internal static class Program
 
         Console.WriteLine($"Started controlled Codex (PID {processId}).");
         StartAutoloadWorker();
+        CodexUpdates.StartWatcher();
         return 0;
     }
 
@@ -420,6 +431,7 @@ internal static class Program
         var parsed = UserscriptMetadata.Parse(metadataSmoke);
         if (parsed.Id != "test" || !parsed.TestedCodexVersions.Contains("1.2.3")) throw new InvalidOperationException("Userscript metadata parsing failed.");
         if (!UserscriptMetadata.AddTestedVersion(metadataSmoke, "2.0.0").Contains("@codex-tested  2.0.0")) throw new InvalidOperationException("Userscript metadata update failed.");
+        UpdateChecks.RunAsync().GetAwaiter().GetResult();
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) Console.WriteLine("Warning: controlled launch is unsupported on this OS.");
         Console.WriteLine("Self-test passed.");
         return 0;
@@ -504,6 +516,7 @@ internal static class Program
     {
         Console.WriteLine("claudex-yourself launch");
         Console.WriteLine("claudex-yourself status");
+        Console.WriteLine("claudex-yourself update check|prepare|status|install");
         Console.WriteLine("claudex-yourself list");
         Console.WriteLine("claudex-yourself run <name-or-path>");
         Console.WriteLine("claudex-yourself run-all");

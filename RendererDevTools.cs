@@ -10,6 +10,29 @@ internal static class RendererDevTools
 {
     private static readonly Uri TargetListUri = new("http://127.0.0.1:9229/json/list");
 
+    internal static Task WaitForReadyAsync(TimeSpan timeout) => WaitForReadyAsync(async () =>
+    {
+        try
+        {
+            return await EvaluateStringAsync("JSON.stringify(location.protocol === 'app:' && document.readyState === 'complete' && Boolean(document.body) && typeof window.electronBridge?.sendMessageFromView === 'function')", TimeSpan.FromSeconds(2)) == "true";
+        }
+        catch (Exception exception) when (exception is HttpRequestException or WebSocketException or OperationCanceledException or InvalidOperationException)
+        {
+            return false; // Endpoint creation, page reloads and preload startup can lag activation.
+        }
+    }, timeout, TimeSpan.FromMilliseconds(250));
+
+    internal static async Task WaitForReadyAsync(Func<Task<bool>> probe, TimeSpan timeout, TimeSpan interval)
+    {
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        while (elapsed.Elapsed < timeout)
+        {
+            if (await probe()) return;
+            await Task.Delay(interval);
+        }
+        throw new TimeoutException("Codex was activated, but its controlled renderer did not become ready. Close Codex and reopen it through claudex-yourself; the restart has not been confirmed.");
+    }
+
     public static async Task<string> EvaluateStringAsync(string expression, TimeSpan timeout)
     {
         await using var session = await Session.ConnectAsync(timeout);
@@ -194,7 +217,7 @@ internal static class RendererDevTools
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
             var targets = await http.GetFromJsonAsync<List<Target>>(TargetListUri) ?? [];
             var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
-                && !item.Url.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
+                && item.Url.StartsWith("app://", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
                 ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");
             var session = new Session(timeout);
             await session._socket.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), session._timeout.Token);
