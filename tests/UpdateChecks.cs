@@ -19,6 +19,7 @@ internal static class UpdateChecks
         Reject(() => CodexUpdates.ValidateRelease(installed, release with { SchemaVersion = 2 }));
         Assert(!CodexUpdates.IsPackageInUse("0x80070005 Access denied"), "do not retry arbitrary access denied");
         Assert(CodexUpdates.IsPackageInUse("0x80073D02"), "retry package-in-use");
+        await CheckInstallRecoveryAsync();
         await CheckDownloadRetriesAsync(check);
         await CheckAvailableVersionsAsync(check);
         var path = Path.Combine(Path.GetTempPath(), $"claudex-update-test-{Guid.NewGuid():N}.msix");
@@ -73,6 +74,44 @@ internal static class UpdateChecks
             throw new Exception("An uncontrolled launch must not report update success.");
         }
         catch (TimeoutException) { }
+    }
+
+    private static async Task CheckInstallRecoveryAsync()
+    {
+        var modes = new List<bool>();
+        var retries = new List<int>();
+        await CodexUpdates.RetryPackageInstallAsync(finish =>
+        {
+            modes.Add(finish);
+            return finish ? Task.CompletedTask : Task.FromException(new InvalidOperationException("0x80073D02"));
+        }, attempt => { retries.Add(attempt); return Task.CompletedTask; });
+        Assert(modes.SequenceEqual(new[] { false, true }) && retries.SequenceEqual(new[] { 1 }), "package-in-use enables target shutdown only on retry");
+        modes.Clear(); retries.Clear();
+        await CodexUpdates.RetryPackageInstallAsync(finish => { modes.Add(finish); return Task.CompletedTask; }, attempt => { retries.Add(attempt); return Task.CompletedTask; });
+        Assert(modes.SequenceEqual(new[] { false }) && retries.Count == 0, "successful ordinary install needs no shutdown recovery");
+        foreach (var message in new[] { "0x80070005", "0x80073D02" })
+        {
+            modes.Clear(); retries.Clear();
+            try
+            {
+                await CodexUpdates.RetryPackageInstallAsync(finish => { modes.Add(finish); return Task.FromException(new InvalidOperationException(message)); }, attempt => { retries.Add(attempt); return Task.CompletedTask; });
+                throw new Exception("Installation failure must remain visible.");
+            }
+            catch (InvalidOperationException exception) when (exception.Message == message) { }
+            Assert(modes.Count == (message == "0x80073D02" ? 3 : 1), "bounded retries only for package-in-use");
+        }
+        var calls = 0;
+        try
+        {
+            await CodexUpdates.RetryPackageInstallAsync(finish =>
+            {
+                calls++;
+                return Task.FromException(finish ? new TimeoutException("Codex did not exit") : new InvalidOperationException("0x80073D02"));
+            }, _ => Task.CompletedTask);
+            throw new Exception("Failed exit check must stop recovery.");
+        }
+        catch (TimeoutException) { }
+        Assert(calls == 2, "quit timeout stops recovery without another retry");
     }
 
     private static async Task CheckDownloadRetriesAsync(CodexUpdates.UpdateCheck check)

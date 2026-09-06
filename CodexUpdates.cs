@@ -177,7 +177,7 @@ internal static class CodexUpdates
     public static async Task<object> ScheduleAsync()
     {
         RequireWindows();
-        // Verify the quit bridge before starting a worker. Never fall back to killing the user's app.
+        // A normal quit and verified exit are required before any installation/recovery attempt.
         var readiness = await RendererDevTools.EvaluateStringAsync("JSON.stringify({ready:typeof window.electronBridge?.sendMessageFromView==='function'})", TimeSpan.FromSeconds(5));
         if (!JsonDocument.Parse(readiness).RootElement.GetProperty("ready").GetBoolean())
             throw new InvalidOperationException("The controlled Codex quit bridge is unavailable.");
@@ -283,17 +283,30 @@ internal static class CodexUpdates
 
     private static async Task InstallWithRetryAsync(UpdateCheck check, PreparedUpdate prepared)
     {
-        for (var attempt = 1; ; attempt++)
+        await RetryPackageInstallAsync(async finishTargetShutdown =>
         {
             // The first attempt immediately follows the caller's verified quiet period.
-            // Recheck if Windows rejected an attempt, or a process appeared in the meantime.
-            if (attempt > 1 || PackageIsRunning(check.Installed.FamilyName))
+            // Never bypass quit cancellation, even when Windows reported package activity.
+            if (finishTargetShutdown || PackageIsRunning(check.Installed.FamilyName))
                 await WaitForExitAsync(check.Installed.FamilyName, TimeSpan.FromSeconds(15));
-            try { await WindowsAsync(prepared.AlreadyStaged ? "register-staged" : "install", "-PackagePath", prepared.PackagePath!); return; }
+            var arguments = new List<string> { "-PackagePath", prepared.PackagePath! };
+            if (finishTargetShutdown) arguments.Add("-FinishTargetShutdown");
+            await WindowsAsync(prepared.AlreadyStaged ? "register-staged" : "install", arguments.ToArray());
+        }, async attempt =>
+        {
+            await SetStatusAsync("installing", $"Codex has exited, but Windows still reports its package in use. Asking Windows to finish closing Codex package activity; retry {attempt} of 2.", check.AvailableVersion);
+            await Task.Delay(2000);
+        });
+    }
+
+    internal static async Task RetryPackageInstallAsync(Func<bool, Task> install, Func<int, Task> retrying)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try { await install(attempt > 1); return; }
             catch (Exception exception) when (attempt < 3 && IsPackageInUse(exception.Message))
             {
-                await SetStatusAsync("installing", $"Windows is still releasing Codex; retry {attempt} of 2.", check.AvailableVersion);
-                await Task.Delay(2000);
+                await retrying(attempt);
             }
         }
     }

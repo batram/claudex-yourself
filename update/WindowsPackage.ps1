@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet('inspect','stage','install','register-staged','detach')][string]$Action,
     [string]$PackagePath,
-    [string]$Launcher
+    [string]$Launcher,
+    [switch]$FinishTargetShutdown
 )
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
@@ -18,13 +19,14 @@ try {
             '{"staged":true}'
         }
         'install' {
-            # Deliberately no ForceApplicationShutdown: the controller must wait for exit first.
-            Add-AppxPackage -Path $PackagePath -ErrorAction Stop
+            # Only a package-in-use retry after the controller's graceful quit/exit check opts in.
+            # Windows tracks package activity beyond processes with GetPackageFamilyName identity.
+            Add-AppxPackage -Path $PackagePath -ForceTargetApplicationShutdown:$FinishTargetShutdown -ErrorAction Stop
             '{"installed":true}'
         }
         'register-staged' {
             # This is the exact manifest already staged by Windows in its protected package directory.
-            Add-AppxPackage -Register -DisableDevelopmentMode -Path $PackagePath -ErrorAction Stop
+            Add-AppxPackage -Register -DisableDevelopmentMode -Path $PackagePath -ForceTargetApplicationShutdown:$FinishTargetShutdown -ErrorAction Stop
             '{"installed":true}'
         }
         'detach' {
