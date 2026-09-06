@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Codex updates
 // @id            codex_updates
-// @version       1.1.0
+// @version       1.3.0
 // @description   Shows Codex updates and the progress of the external claudex update worker.
 // @run-at        renderer-ready
 // @platform      windows
@@ -19,18 +19,23 @@ const draw = () => {
   const { check, checkError, operation } = snapshot;
   const stale = Date.now() - lastSeen > 45000;
   const busy = busyStates.has(operation.state);
+  const waitingMessage = check?.downloadBlockedReason || (operation.state === 'waiting' &&
+    !(Date.parse(snapshot.checkFinishedAtUtc) >= Date.parse(operation.updatedAtUtc)) ? operation.message : null);
   const completed = operation.state === 'completed' && !check?.updateAvailable;
-  badge.textContent = busy || pending === 'install' ? 'Updating…' : operation.state === 'failed' ? 'Update failed' : check?.updateAvailable ? 'Update available' : completed ? 'Updated' : 'Updates';
+  badge.textContent = busy || pending === 'install' ? 'Updating…' : waitingMessage ? 'Update pending' : operation.state === 'failed' ? 'Update failed' : check?.updateAvailable ? 'Update available' : completed ? 'Updated' : 'Updates';
   details.textContent = stale ? 'The update controller is disconnected. Restart Codex through claudex-yourself to reconnect.'
     : pending === 'install' ? 'Starting the updater… Codex will reopen automatically when installation finishes.'
-    : operation.state === 'failed' || busy ? operation.message
+    : busy ? operation.message
     : pending === 'check' || snapshot.checkRunning ? 'Checking for updates…'
     : checkError ? `Could not check for updates: ${checkError}`
+    : waitingMessage ? waitingMessage
+    : check?.sourceWarning && !check.updateAvailable ? `Codex ${check.installed.version} is installed. ${check.sourceWarning}`
+    : operation.state === 'failed' ? operation.message
     : completed ? operation.message
     : check?.updateAvailable ? `Codex ${check.availableVersion} is available (installed: ${check.installed.version}). The update is downloaded before Codex closes. Active work will be interrupted when it restarts.`
-    : check ? `Codex ${check.installed.version} is up to date.` : 'Checking for updates…';
+    : check ? `You have the latest available download: Codex ${check.installed.version}.` : 'Checking for updates…';
   installButton.hidden = !check?.updateAvailable;
-  installButton.disabled = stale || busy || pending;
+  installButton.disabled = stale || busy || pending || Boolean(waitingMessage) || snapshot.checkRunning;
   checkButton.disabled = stale || busy || Boolean(pending) || snapshot.checkRunning;
   installButton.textContent = busy || pending === 'install' ? 'Updating…' : 'Update and restart now';
   checkButton.textContent = pending === 'check' || snapshot.checkRunning ? 'Checking…' : 'Check again';
@@ -72,7 +77,7 @@ const controller = {
     snapshot = value;
     // An old status poll is not an acknowledgement from the detached updater.
     const acknowledgedAt = pending === 'install' ? value.operation?.updatedAtUtc : value.checkFinishedAtUtc;
-    const acknowledged = pending === 'check' || busyStates.has(value.operation?.state) || ['current', 'completed', 'failed'].includes(value.operation?.state);
+    const acknowledged = pending === 'check' || busyStates.has(value.operation?.state) || ['current', 'completed', 'failed', 'waiting'].includes(value.operation?.state);
     if (pending && acknowledged && Date.parse(acknowledgedAt) >= pendingSince) pending = null;
     lastSeen = Date.now(); draw(); return { installed: Boolean(root?.isConnected) };
   }

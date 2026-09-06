@@ -37,6 +37,17 @@ try {
   controller.takeAction();
   controller.update({ ...complete, checkFinishedAtUtc: now, checkRunning: false });
   assert(!checkButton.disabled, 'check completes after its response');
+  const blocked = { ...initial, check: { ...initial.check, downloadBlockedReason: 'The newer download is not ready yet.' } };
+  controller.update(blocked);
+  assert(button.disabled && !checkButton.disabled && shadow.getElementById('badge').textContent === 'Update pending', 'unavailable package disables install but permits lightweight checks');
+  button.click();
+  assert(controller.takeAction() === 'none', 'blocked installer cannot queue another download');
+  controller.update({ ...initial, operation: { state: 'waiting', message: 'Old source unavailable', updatedAtUtc: '2000-01-01T00:00:00Z' }, checkFinishedAtUtc: now });
+  assert(!button.disabled, 'fresh source check clears an obsolete waiting state');
+  controller.update({ check: { updateAvailable: false, availableVersion: '1.0.0.0', announcedVersion: '2.0.0.0', installed: { version: '1.0.0.0' } }, operation: { state: 'idle' } });
+  assert(button.hidden && shadow.getElementById('details').textContent.includes('latest available download'), 'unobtainable announcement does not offer a repeat installation');
+  controller.update({ check: { updateAvailable: false, installed: { version: '1.0.0.0' }, sourceWarning: 'One source could not be checked.' }, operation: { state: 'idle' } });
+  assert(shadow.getElementById('details').textContent.includes('could not be checked') && !shadow.getElementById('details').textContent.includes('latest available'), 'incomplete discovery does not claim everything is current');
   controller.uninstall();
   assert(!realm.document.getElementById('claudex-codex-updates'), 'uninstall removes the panel');
   return { passed: assertions.length, assertions };

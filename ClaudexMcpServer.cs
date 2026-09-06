@@ -287,7 +287,7 @@ internal static class ClaudexMcpServer
     private static readonly object[] Tools =
     [
         Tool("claudex_status", "Check whether the controlled Codex renderer is reachable.", new { }, readOnly: true),
-        Tool("check_codex_update", "Check the official stable Windows Codex release manifest and installed package version; does not install or close Codex.", new { }, readOnly: true),
+        Tool("check_codex_update", "Find the newest obtainable stable Windows Codex package across official version-specific and stable downloads, validated local caches, and the announced Windows-staged package. Reports announced and available versions separately; never installs or closes Codex.", new { }, readOnly: true),
         Tool("get_codex_update_status", "Read the detached Codex updater's persisted progress or failure.", new { }, readOnly: true),
         Tool("install_codex_update", "Update and restart controlled Codex on Windows. Downloads and validates the signed package, requests normal quit, waits for all package processes to exit, installs, verifies registration, and relaunches in controlled mode. This closes Codex windows and interrupts active work; invoke only when the user requests the update/restart.", new { }),
         Tool("list_userscripts", "List explicit per-user scripts and bundled scripts.", new { }, readOnly: true),

@@ -19,6 +19,8 @@ internal static class UpdateChecks
         Reject(() => CodexUpdates.ValidateRelease(installed, release with { SchemaVersion = 2 }));
         Assert(!CodexUpdates.IsPackageInUse("0x80070005 Access denied"), "do not retry arbitrary access denied");
         Assert(CodexUpdates.IsPackageInUse("0x80073D02"), "retry package-in-use");
+        await CheckDownloadRetriesAsync(check);
+        await CheckAvailableVersionsAsync(check);
         var path = Path.Combine(Path.GetTempPath(), $"claudex-update-test-{Guid.NewGuid():N}.msix");
         try
         {
@@ -71,6 +73,117 @@ internal static class UpdateChecks
             throw new Exception("An uncontrolled launch must not report update success.");
         }
         catch (TimeoutException) { }
+    }
+
+    private static async Task CheckDownloadRetriesAsync(CodexUpdates.UpdateCheck check)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"claudex-download-test-{Guid.NewGuid():N}.msix");
+        string? sourceVersion = "26.901.4073.0";
+        string? sourceIdentity = "OpenAI.Codex";
+        var etag = "\"old\"";
+        var requests = 0;
+        using var client = new HttpClient(new HeaderHandler(request =>
+        {
+            Assert(request.Method == HttpMethod.Head, "retry checks headers without downloading installer bytes");
+            requests++;
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            if (sourceVersion is not null) response.Headers.Add("x-ms-meta-package_version", sourceVersion);
+            if (sourceIdentity is not null) response.Headers.Add("x-ms-meta-package_identity", sourceIdentity);
+            response.Headers.ETag = new(etag);
+            return response;
+        }));
+        try
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+                Assert((await CodexUpdates.GetDownloadBlockAsync(client, check, path))?.Contains(sourceVersion) == true, "announced version ahead of download stays blocked");
+            Assert(requests == 3, "retries use only three HEAD requests");
+            sourceVersion = check.AvailableVersion;
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is null, "newly published target enables download");
+            sourceIdentity = "Other.App";
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is not null, "wrong source identity blocks download");
+            sourceIdentity = "OpenAI.Codex";
+            WritePackage(path, "26.901.4073.0", check.Installed.Publisher);
+            sourceVersion = null;
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is not null, "legacy rejected cache needs evidence of replacement");
+            var file = new FileInfo(path);
+            var receipt = new CodexUpdates.DownloadReceipt(check.PackageUrl, etag, file.Length, file.LastWriteTimeUtc);
+            await File.WriteAllTextAsync(path + ".http.json", System.Text.Json.JsonSerializer.Serialize(receipt));
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is not null, "unchanged rejected ETag prevents repeat download");
+            etag = "\"new\"";
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is null, "changed ETag permits a new candidate for validation");
+            await File.WriteAllTextAsync(path + ".http.json", System.Text.Json.JsonSerializer.Serialize(receipt with { Length = file.Length + 1 }));
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is not null, "unrelated receipt cannot authorize retry");
+            File.Delete(path);
+            WritePackage(path, check.AvailableVersion, check.Installed.Publisher);
+            var before = requests;
+            Assert(await CodexUpdates.GetDownloadBlockAsync(client, check, path) is null && requests == before, "valid cached package needs no remote download check");
+            using var staleGet = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            staleGet.Headers.Add("x-ms-meta-package_version", "26.901.4073.0");
+            Assert(CodexUpdates.DownloadHeaderBlock(staleGet, check) is not null, "GET headers reject source regression after HEAD");
+        }
+        finally { File.Delete(path); File.Delete(path + ".http.json"); }
+    }
+
+    private static async Task CheckAvailableVersionsAsync(CodexUpdates.UpdateCheck seed)
+    {
+        var announced = seed with { AvailableVersion = "26.901.6511.0" };
+        var stableVersion = "26.901.5280.0";
+        var versionedAvailable = false;
+        var versionedFails = false;
+        var stableIdentity = "OpenAI.Codex";
+        using var client = new HttpClient(new HeaderHandler(request =>
+        {
+            Assert(request.Method == HttpMethod.Head, "availability discovery never downloads packages");
+            var versioned = request.RequestUri!.AbsolutePath.Contains("/releases/");
+            if (versioned && versionedFails) return new(System.Net.HttpStatusCode.ServiceUnavailable);
+            if (versioned && !versionedAvailable) return new(System.Net.HttpStatusCode.NotFound);
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            response.Headers.Add("x-ms-meta-package_version", versioned ? announced.AvailableVersion : stableVersion);
+            response.Headers.Add("x-ms-meta-package_identity", versioned ? "OpenAI.Codex" : stableIdentity);
+            response.Headers.Add("x-ms-meta-architecture", "x64");
+            return response;
+        }));
+        var available = await CodexUpdates.ResolveAvailableAsync(client, announced, []);
+        Assert(available.UpdateAvailable && available.AvailableVersion == stableVersion && available.AnnouncedVersion == announced.AvailableVersion, "install an obtainable intermediate release without waiting for the announcement");
+        var current = await CodexUpdates.ResolveAvailableAsync(client, announced with { Installed = announced.Installed with { Version = stableVersion } }, []);
+        Assert(!current.UpdateAvailable && current.AvailableVersion == stableVersion, "do not redownload or reinstall the current stable package");
+        var ahead = await CodexUpdates.ResolveAvailableAsync(client, announced with { Installed = announced.Installed with { Version = "26.901.9999.0" } }, []);
+        Assert(!ahead.UpdateAvailable && ahead.AvailableVersion == "26.901.9999.0", "installed version is the floor; never downgrade");
+        versionedAvailable = true;
+        available = await CodexUpdates.ResolveAvailableAsync(client, announced, []);
+        Assert(available.AvailableVersion == announced.AvailableVersion && available.Source == "version-specific", "prefer obtainable version-specific release over lagging alias");
+        stableVersion = "26.901.7000.0";
+        available = await CodexUpdates.ResolveAvailableAsync(client, announced, []);
+        Assert(available.AvailableVersion == stableVersion, "stable asset ahead of announcement is also eligible");
+        versionedFails = true;
+        available = await CodexUpdates.ResolveAvailableAsync(client, announced, []);
+        Assert(available.UpdateAvailable && available.SourceWarning is not null, "one source failure does not hide a valid update");
+        stableIdentity = "Other.App";
+        available = await CodexUpdates.ResolveAvailableAsync(client, announced, []);
+        Assert(!available.UpdateAvailable && available.SourceWarning is not null, "invalid candidates are rejected without claiming a successful complete check");
+        versionedFails = false; versionedAvailable = false; stableIdentity = "OpenAI.Codex"; stableVersion = "26.901.5280.0";
+        available = await CodexUpdates.ResolveAvailableAsync(client, announced, [new(announced.AvailableVersion, seed.PackageUrl, "windows-staged")]);
+        Assert(available.Source == "windows-staged", "already staged announced update beats older downloads");
+        var directory = Path.Combine(Path.GetTempPath(), $"claudex-cache-version-test-{Guid.NewGuid():N}");
+        var path = Path.Combine(directory, "ChatGPT-x64-26.901.6511.0.msix");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            WritePackage(path, stableVersion, announced.Installed.Publisher);
+            var cached = CodexUpdates.ReadCachedCandidates(announced, directory).ToArray();
+            Assert(cached.Length == 1 && cached[0].Version == stableVersion, "cache version comes from its manifest, not the filename");
+            available = await CodexUpdates.ResolveAvailableAsync(client, announced, cached);
+            Assert(available.CachedPackagePath == path && available.AvailableVersion == stableVersion, "reuse a correctly identified cache under the old misleading filename");
+            File.Delete(path);
+            WritePackage(path, "26.901.9999.0", "CN=Untrusted");
+            Assert(!CodexUpdates.ReadCachedCandidates(announced, directory).Any(), "untrusted cached package cannot become a candidate");
+        }
+        finally { File.Delete(path); Directory.Delete(directory); }
+    }
+
+    private sealed class HeaderHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request));
     }
 
     private static void WritePackage(string path, string version, string publisher)

@@ -17,7 +17,11 @@ internal static class CodexUpdates
     private static readonly SemaphoreSlim StatusGate = new(1);
     internal sealed record Package(string FullName, string FamilyName, string Version, string Publisher, string Architecture, string Status, string? InstallLocation = null);
     internal sealed record Release(string BuildVersion, string PackageIdentity, string StoreProductId, int SchemaVersion);
-    internal sealed record UpdateCheck(Package Installed, string AvailableVersion, bool UpdateAvailable, string PackageUrl);
+    internal sealed record UpdateCheck(Package Installed, string AvailableVersion, bool UpdateAvailable, string PackageUrl, string? DownloadBlockedReason = null,
+        string? AnnouncedVersion = null, string? Source = null, string? SourceWarning = null, string? CachedPackagePath = null);
+    internal sealed record UpdateCandidate(string Version, string PackageUrl, string Source, string? CachedPackagePath = null);
+    internal sealed record DownloadReceipt(string Url, string? ETag, long Length, DateTime LastWriteTimeUtc);
+    private sealed class UpdateNotReadyException(string message) : InvalidOperationException(message);
     internal sealed record UpdateStatus(string State, string Message, string? TargetVersion = null, DateTime? UpdatedAtUtc = null, int? WorkerPid = null, DateTime? WorkerStartedUtc = null);
 
     public static async Task<int> CommandAsync(string[] arguments)
@@ -44,7 +48,82 @@ internal static class CodexUpdates
         using var client = CreateClient(TimeSpan.FromSeconds(30));
         var release = JsonSerializer.Deserialize<Release>(await client.GetStringAsync(ManifestUrl), Json)
             ?? throw new InvalidOperationException("OpenAI returned an empty update manifest.");
-        return ValidateRelease(installed, release);
+        var check = ValidateRelease(installed, release);
+        var local = ReadCachedCandidates(check, Root).ToList();
+        if (check.UpdateAvailable && FindStagedManifest(check) is not null)
+            local.Add(new(check.AvailableVersion, VersionedPackageUrl(check), "windows-staged"));
+        check = await ResolveAvailableAsync(client, check, local);
+        if (check.UpdateAvailable && check.Source != "windows-staged")
+            check = check with { DownloadBlockedReason = await GetDownloadBlockAsync(client, check, check.CachedPackagePath ?? CachePath(check)) };
+        return check;
+    }
+
+    private static string VersionedPackageUrl(UpdateCheck check) => new Uri(new Uri(ManifestUrl),
+        $"releases/{check.AvailableVersion}/ChatGPT-{check.Installed.Architecture}.msix").AbsoluteUri;
+
+    internal static async Task<UpdateCheck> ResolveAvailableAsync(HttpClient client, UpdateCheck announced, IEnumerable<UpdateCandidate> local)
+    {
+        async Task<(UpdateCandidate? Candidate, string? Warning)> ProbeAsync(string url, string source, string? expectedVersion)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Head, url);
+                request.Headers.CacheControl = new() { NoCache = true };
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                if (response.StatusCode is System.Net.HttpStatusCode.NotFound or System.Net.HttpStatusCode.Gone) return (null, null);
+                response.EnsureSuccessStatusCode();
+                var version = response.Headers.TryGetValues("x-ms-meta-package_version", out var values) ? values.FirstOrDefault() : expectedVersion;
+                if (version is null) return (null, $"The {source} download did not identify its version.");
+                ParseVersion(version);
+                if (expectedVersion is not null && version != expectedVersion) return (null, "The version-specific download identifies a different version.");
+                var candidate = announced with { AvailableVersion = version, PackageUrl = url };
+                var blocked = DownloadHeaderBlock(response, candidate);
+                return blocked is null ? (new(version, url, source), null) : (null, blocked);
+            }
+            catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or InvalidOperationException)
+            {
+                return (null, $"Could not check the {source} download: {exception.Message}");
+            }
+        }
+        var probes = await Task.WhenAll(
+            ProbeAsync(VersionedPackageUrl(announced), "version-specific", announced.AvailableVersion),
+            ProbeAsync(announced.PackageUrl, "stable", null));
+        var candidates = local.Concat(probes.Where(p => p.Candidate is not null).Select(p => p.Candidate!))
+            .Append(new(announced.Installed.Version, announced.PackageUrl, "installed"));
+        var best = candidates.OrderByDescending(c => ParseVersion(c.Version))
+            .ThenBy(c => c.Source == "windows-staged" ? 0 : c.CachedPackagePath is not null ? 1 : 2).First();
+        var warnings = probes.Where(p => p.Warning is not null).Select(p => p.Warning!).ToList();
+        if (probes.All(p => p.Candidate is null) && warnings.Count == 0)
+            warnings.Add("Neither public download endpoint currently provides an installer to check.");
+        return announced with {
+            AvailableVersion = best.Version, UpdateAvailable = ParseVersion(best.Version) > ParseVersion(announced.Installed.Version),
+            PackageUrl = best.PackageUrl, AnnouncedVersion = announced.AvailableVersion, Source = best.Source,
+            SourceWarning = warnings.Count == 0 ? null : string.Join(" ", warnings), CachedPackagePath = best.CachedPackagePath,
+            DownloadBlockedReason = null
+        };
+    }
+
+    internal static IEnumerable<UpdateCandidate> ReadCachedCandidates(UpdateCheck announced, string directory)
+    {
+        if (!Directory.Exists(directory)) yield break;
+        foreach (var path in Directory.EnumerateFiles(directory, $"ChatGPT-{announced.Installed.Architecture}-*.msix"))
+        {
+            UpdateCandidate? candidate = null;
+            try
+            {
+                using var archive = ZipFile.OpenRead(path);
+                var manifest = archive.GetEntry("AppxManifest.xml");
+                if (manifest is null || manifest.Length > 1024 * 1024) continue;
+                using var stream = manifest.Open();
+                var identity = ReadIdentity(stream);
+                var version = (string?)identity?.Attribute("Version") ?? "";
+                ParseVersion(version);
+                ValidateIdentity(identity, announced with { AvailableVersion = version });
+                candidate = new(version, announced.PackageUrl, "cache", path);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or IOException or InvalidDataException or XmlException) { }
+            if (candidate is not null) yield return candidate;
+        }
     }
 
     internal static UpdateCheck ValidateRelease(Package installed, Release release)
@@ -56,8 +135,9 @@ internal static class CodexUpdates
         var current = ParseVersion(installed.Version);
         var latest = ParseVersion(release.BuildVersion);
         return new(installed, latest.ToString(), latest > current,
-            // OpenAI's documented stable MSIX link. The native version-specific URL currently returns 404.
-            // Validate the downloaded version against the release manifest before any staging or shutdown.
+            // Documented direct-MSIX deployment link; Store announcements can precede this asset.
+            // This companion does not currently use native Codex's Store download API.
+            // The announcement is a discovery hint; resolve actual candidates before installation.
             new Uri(new Uri(ManifestUrl), $"ChatGPT-{installed.Architecture}.msix").AbsoluteUri);
     }
 
@@ -91,7 +171,7 @@ internal static class CodexUpdates
     private static async Task<PreparedUpdate> PrepareCommandAsync()
     {
         try { return await PrepareAsync(await CheckAsync()); }
-        catch (Exception exception) { await SetStatusAsync("failed", exception.Message); throw; }
+        catch (Exception exception) { await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message); throw; }
     }
 
     public static async Task<object> ScheduleAsync()
@@ -122,7 +202,13 @@ internal static class CodexUpdates
             await SetStatusAsync("checking", "Checking for a Codex update.");
             var check = await CheckAsync();
             target = check.AvailableVersion;
-            if (!check.UpdateAvailable) { await SetStatusAsync("current", "Codex is up to date.", target); return 0; }
+            if (!check.UpdateAvailable)
+            {
+                await SetStatusAsync("current", check.SourceWarning is null
+                    ? $"Codex {check.Installed.Version} is the newest version found through the available download sources."
+                    : $"No newer verified package was found. {check.SourceWarning}", target);
+                return 0;
+            }
             var prepared = await PrepareAsync(check);
             var packagePath = prepared.PackagePath ?? throw new InvalidOperationException("The update is no longer available.");
             await SetStatusAsync("closing", "Closing Codex. Accept its quit confirmation to continue; cancelling leaves the update uninstalled.", target);
@@ -143,7 +229,7 @@ internal static class CodexUpdates
         }
         catch (Exception exception)
         {
-            await SetStatusAsync("failed", exception.Message, target);
+            await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message, target);
             // Make a failure visible again if we already closed the app. Keep the failure status intact.
             if (appExited && exception is not TimeoutException)
             {
@@ -168,18 +254,26 @@ internal static class CodexUpdates
             await SetStatusAsync("ready", $"Windows has already staged Codex {check.AvailableVersion}. Ready to finish installation after Codex exits.", check.AvailableVersion);
             return new("ready", stagedManifest, check.AvailableVersion, AlreadyStaged: true);
         }
-        var path = Path.Combine(Root, $"ChatGPT-{check.Installed.Architecture}-{check.AvailableVersion}.msix");
+        var path = check.CachedPackagePath ?? CachePath(check);
         var cached = false;
         if (File.Exists(path))
         {
             try { ValidatePackage(path, check); cached = true; }
-            catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException) { }
+            catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException or XmlException) { }
         }
         if (!cached)
         {
+            using var client = CreateClient(TimeSpan.FromSeconds(30));
+            // Repeat the lightweight check at the point of use, even for direct CLI/MCP requests.
+            var blocked = await GetDownloadBlockAsync(client, check, path);
+            if (blocked is not null) throw new UpdateNotReadyException(blocked);
             await SetStatusAsync("downloading", $"Downloading Codex {check.AvailableVersion}.", check.AvailableVersion);
             await DownloadAsync(check, path);
-            ValidatePackage(path, check);
+            try { ValidatePackage(path, check); }
+            catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException or XmlException)
+            {
+                throw new UpdateNotReadyException($"The downloaded package was rejected: {exception.Message} Check again will inspect the server before another download.");
+            }
         }
         await SetStatusAsync("staging", "Validating and staging the signed Windows package.", check.AvailableVersion);
         await WindowsAsync("stage", "-PackagePath", path);
@@ -207,6 +301,59 @@ internal static class CodexUpdates
     internal static bool IsPackageInUse(string error) => error.Contains("0x80073D02", StringComparison.OrdinalIgnoreCase)
         || error.Contains("apps need to be closed", StringComparison.OrdinalIgnoreCase);
 
+    private static string CachePath(UpdateCheck check) => Path.Combine(Root, $"ChatGPT-{check.Installed.Architecture}-{check.AvailableVersion}.msix");
+
+    internal static string? DownloadHeaderBlock(HttpResponseMessage response, UpdateCheck check)
+    {
+        string? Header(string name) => response.Headers.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
+        var version = Header("x-ms-meta-package_version");
+        if (version is not null && version != check.AvailableVersion)
+            return $"The selected Codex {check.AvailableVersion} download now identifies version {version}. No installer will be downloaded. Use Check again to select the newest available package.";
+        var identity = Header("x-ms-meta-package_identity");
+        var architecture = Header("x-ms-meta-architecture");
+        if ((identity is not null && identity != "OpenAI.Codex") || (architecture is not null && architecture != check.Installed.Architecture))
+            return "OpenAI's download headers do not match the required Codex package identity or architecture. Download paused; use Check again later.";
+        return null;
+    }
+
+    internal static async Task<string?> GetDownloadBlockAsync(HttpClient client, UpdateCheck check, string path)
+    {
+        var rejectedCache = false;
+        if (File.Exists(path))
+        {
+            try { ValidatePackage(path, check); return null; }
+            catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException or XmlException) { rejectedCache = true; }
+        }
+        using var request = new HttpRequestMessage(HttpMethod.Head, check.PackageUrl);
+        request.Headers.CacheControl = new() { NoCache = true };
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+        var blocked = DownloadHeaderBlock(response, check);
+        if (blocked is not null) return blocked;
+        if (!rejectedCache) return null;
+
+        DownloadReceipt? receipt = null;
+        var receiptPath = path + ".http.json";
+        if (File.Exists(receiptPath))
+        {
+            try { receipt = JsonSerializer.Deserialize<DownloadReceipt>(await File.ReadAllTextAsync(receiptPath), Json); }
+            catch (JsonException) { }
+        }
+        var file = new FileInfo(path);
+        var tiedToFile = receipt?.Url == check.PackageUrl && receipt.Length == file.Length && receipt.LastWriteTimeUtc == file.LastWriteTimeUtc;
+        var etag = response.Headers.ETag?.ToString();
+        if (tiedToFile && receipt!.ETag is not null && etag == receipt.ETag)
+            return "OpenAI's download is unchanged from the package already downloaded and rejected. No repeat download will be started. Use Check again later.";
+        if (tiedToFile && (receipt!.ETag is null || etag is null))
+            return "The downloaded package was rejected and the server provides no validator to confirm a replacement. No repeat download will be started. Use Check again later.";
+        // Older cache entries have no receipt. Require positive evidence of a new candidate,
+        // rather than downloading the same hundreds of megabytes on every retry.
+        var versionKnown = response.Headers.TryGetValues("x-ms-meta-package_version", out var versions) && versions.FirstOrDefault() == check.AvailableVersion;
+        var changedETag = tiedToFile && receipt!.ETag is not null && etag is not null && etag != receipt.ETag;
+        return versionKnown || changedETag ? null
+            : "The cached package was rejected and the server has not identified a replacement. No repeat download will be started. Use Check again later.";
+    }
+
     private static async Task DownloadAsync(UpdateCheck check, string path)
     {
         var temporary = path + ".partial";
@@ -215,6 +362,9 @@ internal static class CodexUpdates
             using var client = CreateClient(TimeSpan.FromMinutes(20));
             using var response = await client.GetAsync(check.PackageUrl, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
+            // The source can change between HEAD and GET. Recheck before reading the body.
+            var blocked = DownloadHeaderBlock(response, check);
+            if (blocked is not null) throw new UpdateNotReadyException(blocked);
             const long limit = 2L * 1024 * 1024 * 1024;
             var length = response.Content.Headers.ContentLength;
             if (length is <= 0 or > limit) throw new IOException("Unexpected MSIX download size.");
@@ -241,6 +391,9 @@ internal static class CodexUpdates
                 if (length.HasValue && total != length) throw new IOException("Incomplete MSIX download.");
             }
             File.Move(temporary, path, overwrite: true);
+            var file = new FileInfo(path);
+            await File.WriteAllTextAsync(path + ".http.json", JsonSerializer.Serialize(new DownloadReceipt(check.PackageUrl,
+                response.Headers.ETag?.ToString(), file.Length, file.LastWriteTimeUtc), Json));
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
@@ -268,11 +421,17 @@ internal static class CodexUpdates
         return manifest;
     }
 
-    private static void ValidateIdentity(Stream stream, UpdateCheck check)
+    private static XElement? ReadIdentity(Stream stream)
     {
         using var reader = XmlReader.Create(stream, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit, XmlResolver = null, MaxCharactersInDocument = 1024 * 1024 });
         var doc = XDocument.Load(reader);
-        var identity = doc.Root?.Elements().SingleOrDefault(e => e.Name.LocalName == "Identity");
+        return doc.Root?.Elements().SingleOrDefault(e => e.Name.LocalName == "Identity");
+    }
+
+    private static void ValidateIdentity(Stream stream, UpdateCheck check) => ValidateIdentity(ReadIdentity(stream), check);
+
+    private static void ValidateIdentity(XElement? identity, UpdateCheck check)
+    {
         if ((string?)identity?.Attribute("Name") != "OpenAI.Codex"
             || (string?)identity?.Attribute("Publisher") != check.Installed.Publisher
             || (string?)identity?.Attribute("Version") != check.AvailableVersion
