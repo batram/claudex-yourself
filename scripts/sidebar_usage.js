@@ -1,11 +1,12 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.2.0
+// @version       1.2.1
 // @description   Shows all available Codex usage limits above the profile row.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
+// @codex-tested  26.903.9818.0
 // @grant         none
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.sidebar-usage");
@@ -15,6 +16,7 @@ const cacheKey = "claudex-yourself.sidebar-usage.v2";
 window[stateKey]?.uninstall?.();
 
 const scriptId = "sidebar_usage";
+const usageLink = '<a class="claudex-usage-link" href="codex://settings/usage" title="Open usage settings">Usage</a>';
 let observer;
 let refreshTimer;
 let widget;
@@ -82,7 +84,7 @@ const getApiClient = async () => {
 const render = (data, stale = false) => {
   if (!widget) return;
   if (!data?.limits?.length) {
-    widget.innerHTML = `<div class="claudex-usage-heading"><span>Usage</span><span>Loading…</span></div>`;
+    widget.innerHTML = `<div class="claudex-usage-heading">${usageLink}<span>Loading…</span></div>`;
     return;
   }
   const plan = data.plan ? data.plan.replace(/lite$/i, "").replace(/^./, value => value.toUpperCase()) : "";
@@ -96,7 +98,7 @@ const render = (data, stale = false) => {
         </div>`).join("")}
     </div>`).join("");
   widget.innerHTML = `
-    <div class="claudex-usage-heading"><span>Usage</span><span>${escapeHtml(plan)}${stale ? " &middot; cached" : ""}</span></div>
+    <div class="claudex-usage-heading">${usageLink}<span>${escapeHtml(plan)}${stale ? " &middot; cached" : ""}</span></div>
     ${rows}
     ${data.credits != null ? `<div class="claudex-usage-credits"><span>Credits</span><strong>${escapeHtml(data.credits)}</strong></div>` : ""}`;
 };
@@ -108,6 +110,21 @@ const ensureWidget = () => {
     widget = document.createElement("section");
     widget.className = "claudex-sidebar-usage";
     widget.setAttribute("aria-label", "Usage remaining");
+    widget.addEventListener("click", async event => {
+      if (!event.target.closest(".claudex-usage-link")) return;
+      event.preventDefault();
+      try {
+        const source = document.querySelector("link[rel='modulepreload'][href*='/app-initial-'][href$='.js']")?.href;
+        if (!source) throw new Error("Codex application module was not found.");
+        const module = await import(source);
+        const bridge = Object.values(module).find(value => value && typeof value === "object" &&
+          typeof Object.getPrototypeOf(value)?.dispatchHostMessage === "function");
+        if (!bridge) throw new Error("Codex navigation bridge was not found.");
+        bridge.dispatchHostMessage({ type:"navigate-to-route", path:"/settings/usage" });
+      } catch (error) {
+        console.error("Sidebar usage navigation failed", error);
+      }
+    });
     render(readCache(), true);
   }
   if (widget.parentElement !== footer.parentElement || widget.nextElementSibling !== footer) footer.before(widget);
@@ -138,6 +155,9 @@ const install = () => {
     .claudex-sidebar-usage { box-sizing:border-box; width:100%; flex:none; padding:8px 12px 9px; border-top:1px solid var(--color-token-border, rgba(127,127,127,.15)); color:var(--color-token-text-secondary); }
     .claudex-usage-heading,.claudex-usage-meta,.claudex-usage-credits { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .claudex-usage-heading { margin-bottom:7px; font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; opacity:.6; }
+    .claudex-usage-link { color:inherit; text-decoration:none; cursor:pointer; border-radius:2px; }
+    .claudex-usage-link:hover { text-decoration:underline; }
+    .claudex-usage-link:focus-visible { outline:2px solid currentColor; outline-offset:3px; }
     .claudex-usage-group + .claudex-usage-group { margin-top:8px; }
     .claudex-usage-name { margin-bottom:4px; overflow:hidden; font-size:12px; font-weight:600; line-height:14px; text-overflow:ellipsis; white-space:nowrap; color:var(--color-token-text-primary, currentColor); }
     .claudex-usage-window + .claudex-usage-window { margin-top:5px; }
