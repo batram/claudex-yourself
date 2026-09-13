@@ -11,6 +11,9 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 - `Program.cs`, `RendererDevTools.cs`, and `ClaudexMcpServer.cs`: CLI, renderer control, and MCP entry points.
 - `UserscriptMetadata.cs`, `UserscriptDevelopment.cs`, and `AutoloadScripts.cs`: userscript metadata, publishing, execution, and autoload behavior.
 - `scripts/*.js`: bundled userscript sources. These are the canonical repository copies.
+- `CodexUpdates.cs`, `update/WindowsPackage.ps1`: Windows update discovery, validation, and deployment.
+- `README.md`, `docs/`, `SECURITY.md`: setup, userscript, updater, and trust documentation.
+- `tests/UpdateChecks.cs`, `tests/WindowsPackageChecks.ps1`, `tests/UpdatePanelChecks.js`: updater regression checks.
 - `tests/McpProtocolSmoke.ps1`: MCP protocol/tool smoke test, optionally against a live renderer.
 - `tests/SearchRendererSource.ps1`: focused live source-search helper.
 - `build.ps1` and `build.sh`: platform build entry points.

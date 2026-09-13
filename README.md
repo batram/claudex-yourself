@@ -1,10 +1,28 @@
 # Claudex Yourself
 
-A small cross-platform Codex Desktop controller and JavaScript userscript runner. It launches Codex with a local DevTools endpoint, then runs explicit local scripts inside the Codex renderer.
+Customize Codex Desktop with local JavaScript userscripts, and inspect or control its renderer through a CLI or MCP server.
 
-This uses an internal Codex Desktop interface rather than an officially supported extension API. Commands fail visibly if a Codex update changes that interface.
+Claudex launches Codex with a loopback DevTools endpoint. It includes a sidebar usage display, reversible UI tweaks, an in-app userscript settings page, and a Windows update companion for controlled launches.
 
-## Build
+This is an independent project using internal Codex Desktop interfaces, not an officially supported extension API. Codex updates can break compatibility. Scripts run with renderer authority; read the [trust guide](SECURITY.md) before using third-party scripts.
+
+## Platform support
+
+| Platform                      | Status                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------- |
+| Windows x64                   | Implemented and live-tested                                                           |
+| macOS Apple Silicon and Intel | Build targets and launcher implemented; live launch still needs verification on a Mac |
+| Linux                         | Controlled Codex Desktop launch is not implemented                                    |
+
+The Windows updater handles stable `OpenAI.Codex` packages on x64 and Arm64. That package support does not establish end-to-end Windows Arm64 launcher testing.
+
+## Quick start
+
+Run these commands from the repository root.
+
+### 1. Build
+
+Building requires the .NET 10 SDK. Published output is framework-dependent: the destination needs the .NET 10 runtime for the selected architecture. An SDK installation includes a runtime.
 
 Windows:
 
@@ -15,10 +33,10 @@ Windows:
 macOS:
 
 ```bash
-./build.sh
+sh ./build.sh
 ```
 
-Explicit runtime builds are also supported:
+The default output is `bin/`. Windows defaults to `win-x64`; the macOS shell script selects the host architecture. Explicit runtime builds write to `bin/<runtime>/`:
 
 ```powershell
 .\build.ps1 win-x64
@@ -26,148 +44,113 @@ Explicit runtime builds are also supported:
 .\build.ps1 osx-x64
 ```
 
-The build requires the matching .NET 10 runtime on the destination machine.
+```bash
+sh ./build.sh osx-arm64
+sh ./build.sh osx-x64
+```
 
-## Launch Codex
+Keep the published directory together, including `scripts/`, `update/`, DLL, and runtime configuration files. The build does not add the executable to PATH.
 
-Quit Codex completely before the first controlled launch:
+### 2. Launch Codex
+
+Install Codex Desktop and quit it completely before the first controlled launch. Launching while an ordinary Codex process is running activates that process; it does not retrofit the DevTools endpoint.
+
+Windows:
 
 ```powershell
 .\bin\claudex-yourself.exe launch
+.\bin\claudex-yourself.exe status
 ```
+
+macOS:
 
 ```bash
 ./bin/claudex-yourself launch
+./bin/claudex-yourself status
 ```
 
-Windows activation uses the installed Codex package. macOS launch looks for `Codex.app` in `/Applications` and `~/Applications` and starts its executable with the same isolated control configuration.
+Windows uses the installed Codex package. macOS looks for `Codex.app` in `/Applications` and `~/Applications`. The launcher requests a DevTools endpoint at `127.0.0.1:9229` and uses the Codex profile under the platform's application-data directory.
 
-### Windows updates in controlled mode
+On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut.
 
-Codex's native updater is disabled for its `dev` build flavor, which the controlled launcher needs for the DevTools endpoint. Claudex supplies a separate **Updates** panel during controlled Windows launches. It checks OpenAI's stable release manifest on startup and every 15 minutes. Select **Update and restart now** to download and stage the signed MSIX, quit Codex normally, install, verify the registered version, and reopen in controlled mode with userscripts restored. Active work can be interrupted by the restart; Codex's normal quit confirmation remains in effect.
+The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
 
-The updater runs outside Codex's package/job lifetime. It waits until no processes have the Codex package identity for two continuous seconds before registration. Cancelling quit or leaving a process running aborts installation after 60 seconds. It retries only package-in-use errors, at most twice, and records failures in `%APPDATA%\claudex-yourself\updates\status.json`. It does not force-kill Codex or change Windows package permissions. The downloaded package's identity, publisher, architecture, and version must match the selected candidate before Windows validates its signature during staging.
-
-The panel acknowledges clicks immediately, keeps the install action disabled until the worker responds, and shows download progress. Release checks run in the background so they do not block progress updates. The launcher keeps its controlled startup environment active until the main Codex renderer and preload bridge are ready, then restores normal Windows package debugging settings. Update completion is recorded only after that readiness check; activating an ordinary Codex window is insufficient. The first installation attempt shares the existing shutdown quiet period instead of adding a second fixed delay.
-
-The updater chooses the **newest obtainable version**, using lightweight checks of the official version-specific and stable download URLs, package manifests in its local cache, and Windows staging for the announced version. The installed version is the minimum: it never offers a downgrade or reinstalls the current version. For example, with 5003 installed, 6511 announced, and 5280 actually downloadable, it offers 5280. With 5280 already installed, it reports the latest available download instead of repeatedly trying 6511. An obtainable version-specific release takes precedence over an older stable alias, and a stable package newer than the announcement is eligible too. Check results expose `announcedVersion` separately from the selected `availableVersion`. Failures checking individual sources stay visible.
-
-HTTP headers are checked before downloading and again on the GET response before reading the installer body. Full package manifest and Windows signature checks remain required. Rejected downloads retain an HTTP receipt; an unchanged ETag prevents another full download. Cache entries are identified by their actual package manifests rather than their filenames, allowing a valid older download saved under an announced version's name to be reused. If the selected source changes or remains a rejected candidate, **Update pending** disables installation until **Check again** finds a usable source.
-
-The release feed is a Store announcement; direct MSIX downloads are separate deployment sources and can publish at different times. Native Codex first tries Microsoft's Store download API. This companion checks the native version-specific MSIX fallback as well as the stable direct MSIX and existing Windows staging; it does not itself download through the Store API. Its availability results describe those checked sources rather than every possible Store delivery channel.
-
-If Windows has already staged the announced version (for example, after a failed native update), the updater includes that protected package as a candidate and registers it after shutdown when selected. It uses the normal user's registered package location; it does not require an administrator query of other users' packages. If no verified candidate is newer than the installed version, Codex stays open.
-
-```powershell
-claudex-yourself update check     # Inspect installed and available package versions
-claudex-yourself update prepare   # Download, validate, and stage; leave Codex running
-claudex-yourself update install   # Download if needed, quit, install, and restart controlled Codex
-claudex-yourself update status    # Read persisted progress or failure
-```
-
-The MCP equivalents are `check_codex_update`, `install_codex_update`, and `get_codex_update_status`. Installation requires a reachable controlled renderer for graceful quit. Ordinary Codex launches keep their normal behavior. This companion updater currently supports the stable `OpenAI.Codex` Windows package on x64 and Arm64; macOS updating remains unchanged. The update panel is a reversible registered userscript (`codex_updates`), loaded by the launcher's companion worker rather than the per-user autoload list. No new Codex build is marked tested just because installation succeeds.
-
-## Userscripts
-
-Run a bundled script by name or any explicit JavaScript file:
+### 3. Try a userscript
 
 ```powershell
 claudex-yourself list
-claudex-yourself run reload-dgspy
-claudex-yourself run C:\tools\my-codex-fix.js
-claudex-yourself run-all
-claudex-yourself autoload hide_pets_button on
+claudex-yourself run sidebar_usage
 ```
 
-The per-user script directory is printed by `status` and `list`. `run-all` executes only that user directory, alphabetically; bundled scripts never run automatically.
+The sidebar script shows remaining usage and reset times. Click its **Usage** title to open **Usage & billing**.
 
-`autoload <name> on|off` controls whether a per-user script runs after the next controlled launch. The launcher starts a detached worker, waits up to 60 seconds for the renderer, and records each script result without delaying the launcher itself. `list` marks enabled entries with `[autoload]`.
-
-### In-app switches
-
-`userscript_settings.js` adds a **User scripts** page to Codex Settings using only renderer JavaScript. It stores preferences in Codex `localStorage`; it does not read the filesystem or modify `autoload.json`.
-
-For a script to appear and remain switchable, copy it and `userscript_settings.js` into the per-user script directory and leave all of them enabled for autoload. A selectable script still executes at renderer startup, but its controller installs only when its in-app preference is enabled. Switches apply immediately because selectable scripts provide reversible `install()` and `uninstall()` operations.
-
-The settings userscript currently catalogs:
-
-- `sidebar_usage`
-- `hide_invite_a_friend`
-- `hide_pets_button`
-
-### Live development
-
-Develop a workspace userscript with automatic validation, atomic publishing, and renderer reload on every save:
+To publish a script into your per-user directory, run it immediately, and enable future controlled launches:
 
 ```powershell
-claudex-yourself dev .\scripts\userscript_settings.js --autoload
+claudex-yourself dev .\scripts\sidebar_usage.js --autoload
 ```
 
-The initial run and every subsequent save parse the metadata, require `@id` to match the filename, publish the source into the per-user script directory, and execute it in the controlled renderer. `--autoload` also enables the script for future controlled launches. If execution fails, the previous installed source is restored and the watcher remains active for the next edit. Press `Ctrl+C` to stop watching.
+Wait for the initial `reloaded` result, then press Ctrl+C to stop watching. Leaving the command running reloads the script whenever its source changes. On macOS, use `./scripts/sidebar_usage.js`.
 
-Scripts are async function bodies with a small `claudex` API:
+Repeat with `userscript_settings.js` to add **User scripts** to Settings. Publish `hide_invite_a_friend.js` and `hide_pets_button.js` the same way if you want those switches to control installed scripts. The settings page catalogs those three selectable scripts; it is not an automatic catalog of arbitrary scripts.
 
-```javascript
-claudex.log("starting");
-const status = await claudex.request("mcpServerStatus/list", {
-  detail: "toolsAndAuthOnly"
-});
-await claudex.sleep(250);
-return { serverCount: status.data.length };
-```
+See the [userscript guide](docs/userscripts.md) for metadata, live development, autoload, switches, and MCP publication.
 
-Available values:
+## MCP setup
 
-- `claudex.request(method, params?, timeoutMs?)`
-- `claudex.sleep(milliseconds)`
-- `claudex.log(...values)`
-- `claudex.scriptName`
-
-Every per-user script starts with a metadata contract:
-
-```javascript
-// ==ClaudexUserScript==
-// @name          Hide pets button
-// @id            hide_pets_button
-// @version       1.0.0
-// @description   Hides the Show pet / Hide pet account-menu entry.
-// @run-at        renderer-ready
-// @platform      windows, macos
-// @codex-tested  26.803.10989.0
-// @grant         codex-request
-// ==/ClaudexUserScript==
-```
-
-`@id` must match the filename. `@codex-tested` is repeatable and records exact builds that were behaviourally confirmed. A new Codex version reports `untested_current_version`; the script still runs, but autoload and MCP results preserve that warning. Unsupported platforms are skipped. Use `mark_userscript_tested` only after checking the behaviour, not merely because execution returned without an exception.
-
-`reload` is a short alias for the bundled `reload-dgspy.js`. It waits for Codex's real responses and succeeds only after dgSpy exposes a populated tool catalog.
-
-## MCP ouroboros
-
-Register this executable as a Codex MCP server:
+The Codex CLI must be available on PATH for configuration:
 
 ```powershell
 claudex-yourself configure codex
-claudex-yourself reload
+claudex-yourself run reload-mcp
 ```
 
-It exposes tools to inspect, read, write, run, mark userscripts for autoload, compare compatibility, and record an explicitly verified Codex build. Script files are read fresh on every call, so changing JavaScript requires no MCP restart. `get_autoload_status` reports the previous launch worker result.
+The first command registers the current executable as the `claudex-yourself` stdio MCP server. The second reloads Codex's MCP configuration through the controlled renderer and verifies that this server reconnects. Keep the executable at its registered location, or configure it again after moving it.
 
-Renderer development tools are also available through MCP:
+The separate `reload` shortcut runs `reload-dgspy`, a helper for an existing dgSpy MCP setup. It is not the reload command for this project's own server.
 
-- `inspect_renderer` returns bounded selector/text matches with visibility, bounds, attributes, HTML, and ancestors.
-- `interact_renderer` performs trusted CDP clicks and key presses.
-- `capture_renderer` saves a viewport or selected-element PNG under the Claudex state directory.
-- `evaluate_renderer` runs diagnostic JavaScript with serialized output capped at 20,000 characters.
-- `get_userscript_runtime_status` reports registered controllers and whether they are installed and reversible.
-- `search_renderer_sources` searches loaded JavaScript bundles and returns bounded source snippets.
+| Purpose                       | Tools                                                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Connection                    | `claudex_status`                                                                                            |
+| Script files and execution    | `list_userscripts`, `read_userscript`, `write_userscript`, `run_userscript`                                 |
+| Compatibility                 | `get_userscript_metadata`, `list_userscript_compatibility`, `mark_userscript_tested`                        |
+| Startup and live controllers  | `set_userscript_autoload`, `get_autoload_status`, `get_userscript_runtime_status`                           |
+| Renderer inspection and input | `inspect_renderer`, `interact_renderer`, `capture_renderer`, `evaluate_renderer`, `search_renderer_sources` |
+| MCP reload                    | `reload_mcp`, `get_reload_status`                                                                           |
+| Windows updates               | `check_codex_update`, `install_codex_update`, `get_codex_update_status`                                     |
 
-`reload_mcp` starts a detached worker and returns before Codex replaces the MCP transport. After the server reconnects, `get_reload_status` reports the worker's verified result. This lets Codex control the same DevTools userscript host that is controlling Codex.
+Script files are read fresh on each call; JavaScript edits do not require an MCP restart. `reload_mcp` replaces the connection through a detached worker. Call `get_reload_status` after reconnecting.
 
-Scripts execute with the renderer's authority. Detailed trust considerations are [REDACTED]. Scripts run only through explicit `run` or `run-all` commands; there is no automatic startup loading or dependency download.
+## Windows updates
 
-## Platform status
+Controlled launches use Codex's `dev` build flavor, where its native updater is disabled. Claudex adds an **Updates** panel that checks for stable Windows releases on startup and every 15 minutes. Installation quits and restarts Codex and can interrupt active work.
 
-- Windows x64: implemented and live-tested.
-- macOS Apple Silicon and Intel: builds are supported; first live Codex launch still needs verification on a Mac.
-- Linux: the runner core is portable, but Codex Desktop controlled launch is not implemented.
+```powershell
+claudex-yourself update check
+claudex-yourself update prepare
+claudex-yourself update install
+claudex-yourself update status
+```
+
+`prepare` downloads, validates, and stages without closing Codex. `install` requests a normal quit, installs, verifies registration, and restarts controlled Codex. The updater chooses a verified obtainable version newer than the installed version; Store announcements and direct downloads can arrive at different times.
+
+Read the [Windows update guide](docs/windows-updates.md) for candidate selection, shutdown recovery, package checks, and limitations.
+
+## Troubleshooting
+
+| Symptom                           | What to check                                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| DevTools connection refused       | Quit Codex fully, launch through Claudex, and run `status`. An already-running ordinary window is not controlled. |
+| Command not found                 | Use the published executable's path. The build does not install a PATH entry.                                     |
+| Runtime missing                   | Install the .NET 10 runtime matching the published runtime target.                                                |
+| MCP configuration fails           | Check that `codex` resolves on PATH. Use `run reload-mcp` after configuration.                                    |
+| Script absent after restart       | Check `list` for its per-user copy and `[autoload]` marker, then inspect `get_autoload_status`.                   |
+| Script loads but its UI is hidden | Check its in-app preference. Autoload and in-app enablement are separate.                                         |
+| `untested_current_version`        | Verify the script's behavior on the exact Codex build before marking it tested.                                   |
+| Update pending or failed          | Run `update status` and see the [update guide](docs/windows-updates.md).                                          |
+
+`list` prints the per-user script directory without requiring a live renderer. On Windows, state normally lives under `%APPDATA%\claudex-yourself`, including scripts, captures, and update status. Review screenshots and diagnostic output for private information before sharing them.
+
+## Development
+
+See [AGENTS.md](AGENTS.md) for the repository map, build and validation commands, and coding-agent instructions.
