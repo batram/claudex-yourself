@@ -1,11 +1,12 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.0.0
+// @version       1.0.1
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
+// @codex-tested  26.903.9818.0
 // @grant         none
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.userscript-settings");
@@ -70,8 +71,12 @@ const closePanel = () => {
 };
 const openPanel = (settingsNav, button) => {
   closePanel();
-  const nativeHeading = [...document.querySelectorAll("h1")].find(element => element.textContent?.trim() === "General");
-  const scroller = nativeHeading?.closest("[class*='scrollbar-stable'][class*='overflow-y-auto']");
+  // Find the content beside this settings navigation, regardless of the active page.
+  let scroller;
+  for (let container = settingsNav.parentElement; container && !scroller; container = container.parentElement) {
+    scroller = [...container.querySelectorAll("[class*='scrollbar-stable'][class*='overflow-y-auto']")]
+      .find(element => !element.contains(settingsNav) && !settingsNav.contains(element) && element.querySelector("h1"));
+  }
   const nativeContent = scroller?.firstElementChild;
   if (!scroller || !nativeContent) return;
   hiddenNativeContent = nativeContent;
