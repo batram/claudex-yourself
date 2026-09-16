@@ -76,6 +76,10 @@ Every per-user script starts with a metadata contract:
 
 ## Sidebar usage
 
+Use the small **×** beside a sidebar entry to hide it directly. Restore it with its switch under **Settings → User scripts → Usage shown in sidebar**.
+
+In **Settings → User scripts → Usage shown in sidebar**, choose which limits to display. The switches come from Codex's current usage response, including additional limits such as `gpt-reserve`; new limits are shown by default. Choices apply immediately and persist across launches. A limit that disappears from the response is removed from the choices, but its preference is remembered if it returns. Settings search can find **User scripts** by its name, usage, or an available limit's name.
+
 `sidebar_usage` shows remaining limits and reset times above the profile menu. Its **Usage** heading opens **Usage & billing** in Codex. The **User scripts** settings entry can be opened directly from that page, General, or another settings page. In-app switches and the autoload list are separate: leave selectable scripts in autoload so their controllers are available after a restart.
 
 ## Publishing through MCP
