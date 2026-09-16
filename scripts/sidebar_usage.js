@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.3.3
+// @version       1.3.4
 // @description   Shows all available Codex usage limits above the profile row.
 // @run-at        renderer-ready
 // @platform      windows, macos
@@ -234,7 +234,9 @@ const install = () => {
     .claudex-usage-group + .claudex-usage-group { margin-top:12px; }
     .claudex-usage-title { display:flex; align-items:center; gap:8px; margin-bottom:5px; min-height:20px; }
     .claudex-usage-name { flex:1; min-width:0; overflow:hidden; font-size:12px; font-weight:600; line-height:16px; text-overflow:ellipsis; white-space:nowrap; color:var(--color-token-text-primary, currentColor); }
-    .claudex-usage-hide { display:flex; align-items:center; justify-content:center; flex:none; width:20px; height:20px; padding:0; border:0; border-radius:4px; background:transparent; color:inherit; font:16px/1 sans-serif; opacity:.5; cursor:pointer; }
+    .claudex-usage-hide { display:flex; align-items:center; justify-content:center; flex:none; width:20px; height:20px; padding:0; border:0; border-radius:4px; background:transparent; color:inherit; font:16px/1 sans-serif; opacity:0; pointer-events:none; cursor:pointer; }
+    .claudex-sidebar-usage:hover .claudex-usage-hide { opacity:.5; pointer-events:auto; }
+    .claudex-usage-hide:focus-visible { pointer-events:auto; }
     .claudex-usage-hide:hover,.claudex-usage-hide:focus-visible { opacity:1; background:var(--color-primary-ghost-hover, rgba(127,127,127,.12)); }
     .claudex-usage-hide:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
     .claudex-usage-window + .claudex-usage-window { margin-top:8px; }
