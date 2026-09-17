@@ -1,10 +1,11 @@
 // ==ClaudexUserScript==
 // @name          Codex updates
 // @id            codex_updates
-// @version       1.3.0
+// @version       1.4.0
 // @description   Shows Codex updates and the progress of the external claudex update worker.
 // @run-at        renderer-ready
 // @platform      windows
+// @grant         none
 // ==/ClaudexUserScript==
 const key = Symbol.for('claudex-yourself.codex-updates');
 window[key]?.uninstall?.();
@@ -13,7 +14,18 @@ const id = 'codex_updates';
 let root, action = null, pending = null, pendingSince = 0, lastSeen = Date.now();
 let snapshot = { check: null, checkError: null, operation: { state: 'idle' } };
 const busyStates = new Set(['checking', 'downloading', 'staging', 'closing', 'installing', 'restarting']);
-let panel, badge, details, installButton, checkButton, timer;
+let panel, badge, details, installButton, checkButton, timer, observer;
+const place = () => {
+  if (!root) return;
+  const help = document.querySelector('button[aria-label="Open help menu"]');
+  root.hidden = !help || !help.getClientRects().length;
+  if (help && (root.parentElement !== help.parentElement || root.nextElementSibling !== help)) help.before(root);
+  if (!panel.hidden && !root.hidden) {
+    const rect = badge.getBoundingClientRect();
+    panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - panel.offsetWidth - 8))}px`;
+    panel.style.bottom = `${Math.max(8, innerHeight - rect.top + 8)}px`;
+  }
+};
 const draw = () => {
   if (!root) return;
   const { check, checkError, operation } = snapshot;
@@ -22,7 +34,10 @@ const draw = () => {
   const waitingMessage = check?.downloadBlockedReason || (operation.state === 'waiting' &&
     !(Date.parse(snapshot.checkFinishedAtUtc) >= Date.parse(operation.updatedAtUtc)) ? operation.message : null);
   const completed = operation.state === 'completed' && !check?.updateAvailable;
-  badge.textContent = busy || pending === 'install' ? 'Updating…' : waitingMessage ? 'Update pending' : operation.state === 'failed' ? 'Update failed' : check?.updateAvailable ? 'Update available' : completed ? 'Updated' : 'Updates';
+  const label = busy || pending === 'install' ? 'Updating…' : waitingMessage ? 'Update pending' : operation.state === 'failed' ? 'Update failed' : check?.updateAvailable ? 'Update available' : completed ? 'Updated' : 'Updates';
+  badge.setAttribute('aria-label', label);
+  badge.title = label;
+  badge.dataset.attention = String(Boolean(check?.updateAvailable || waitingMessage || operation.state === 'failed'));
   details.textContent = stale ? 'The update controller is disconnected. Restart Codex through claudex-yourself to reconnect.'
     : pending === 'install' ? 'Starting the updater… Codex will reopen automatically when installation finishes.'
     : busy ? operation.message
@@ -40,6 +55,9 @@ const draw = () => {
   installButton.textContent = busy || pending === 'install' ? 'Updating…' : 'Update and restart now';
   checkButton.textContent = pending === 'check' || snapshot.checkRunning ? 'Checking…' : 'Check again';
   badge.setAttribute('aria-expanded', String(!panel.hidden));
+  if (!panel.hidden && !panel.matches(':popover-open')) panel.showPopover();
+  if (panel.hidden && panel.matches(':popover-open')) panel.hidePopover();
+  place();
 };
 const install = () => {
   if (root) return { installed: true };
@@ -48,15 +66,19 @@ const install = () => {
   const shadow = root.attachShadow({ mode: 'open' });
   // Isolated styles and textContent keep update messages out of the app's markup/style rules.
   shadow.innerHTML = `<style>
-    :host { position:fixed; right:18px; bottom:12px; z-index:2147483000; font:12px system-ui,sans-serif; color:CanvasText; color-scheme:light dark; }
+    :host { display:inline-flex; flex-shrink:0; width:32px; height:32px; font:12px system-ui,sans-serif; color:CanvasText; color-scheme:light dark; -webkit-app-region:no-drag; }
+    :host([hidden]) { display:none!important; }
     button { font:inherit; border:1px solid color-mix(in srgb,CanvasText 20%,transparent); border-radius:8px; padding:6px 10px; background:Canvas; color:CanvasText; cursor:pointer; }
     button:focus-visible { outline:2px solid #3979f6; outline-offset:2px; }
     button:disabled { opacity:.55; cursor:default; }
-    #panel { position:absolute; bottom:38px; right:0; width:min(320px,calc(100vw - 48px)); padding:16px; border:1px solid color-mix(in srgb,CanvasText 20%,transparent); border-radius:12px; background:Canvas; box-shadow:0 6px 24px #0003; }
+    #badge { position:relative; display:flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--color-text-tertiary, color-mix(in srgb,CanvasText 55%,transparent)); }
+    #badge:hover, #badge[aria-expanded="true"] { background:color-mix(in srgb,CanvasText 7%,transparent); }
+    #badge[data-attention="true"]::after { content:''; position:absolute; right:4px; top:4px; width:5px; height:5px; border-radius:50%; background:#3979f6; }
+    #panel { position:fixed; inset:auto; margin:0; z-index:2147483000; width:min(320px,calc(100vw - 48px)); max-height:calc(100vh - 80px); overflow:auto; padding:16px; border:1px solid color-mix(in srgb,CanvasText 20%,transparent); border-radius:12px; background:Canvas; color:CanvasText; box-shadow:0 6px 24px #0003; }
     h2 { font-size:14px; margin:0 0 10px; } p { line-height:1.5; overflow-wrap:anywhere; } .actions { display:flex; gap:8px; flex-wrap:wrap; } #install { background:#2867dd; color:white; border-color:transparent; }
     [hidden] { display:none!important; }
-  </style><button id="badge" aria-controls="panel" aria-expanded="false">Updates</button>
-  <section id="panel" aria-label="Codex updates" hidden><h2>Codex updates · Claudex</h2><p id="details" role="status" aria-live="polite"></p><div class="actions"><button id="install">Update and restart now</button><button id="check">Check again</button><button id="close" aria-label="Close update panel">Close</button></div></section>`;
+  </style><button id="badge" aria-label="Updates" title="Updates" aria-controls="panel" aria-expanded="false"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 8a6.75 6.75 0 1 0-1.2 6.3M16.5 3.5V8H12M10 13V7m-2.5 2.5L10 7l2.5 2.5"/></svg></button>
+  <section id="panel" popover="manual" aria-label="Codex updates" hidden><h2>Codex updates · Claudex</h2><p id="details" role="status" aria-live="polite"></p><div class="actions"><button id="install">Update and restart now</button><button id="check">Check again</button><button id="close" aria-label="Close update panel">Close</button></div></section>`;
   panel = shadow.getElementById('panel'); badge = shadow.getElementById('badge'); details = shadow.getElementById('details');
   installButton = shadow.getElementById('install'); checkButton = shadow.getElementById('check');
   badge.onclick = () => { panel.hidden = !panel.hidden; draw(); };
@@ -65,11 +87,15 @@ const install = () => {
   installButton.onclick = () => { if (!installButton.disabled) { action = pending = 'install'; pendingSince = Date.now(); draw(); } };
   checkButton.onclick = () => { if (!checkButton.disabled) { action = pending = 'check'; pendingSince = Date.now(); draw(); } };
   document.body.append(root);
+  observer = new MutationObserver(place);
+  observer.observe(document.body, { childList:true, subtree:true });
+  window.addEventListener('resize', place);
+  window.addEventListener('scroll', place, true);
   timer = setInterval(draw, 5000);
   draw();
   return { installed: true };
 };
-const uninstall = () => { clearInterval(timer); root?.remove(); root = null; action = pending = null; return { installed: false }; };
+const uninstall = () => { clearInterval(timer); observer?.disconnect(); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true); root?.remove(); root = null; action = pending = null; return { installed: false }; };
 const controller = {
   id, install, uninstall, get installed() { return Boolean(root?.isConnected); },
   takeAction() { const value = action; action = null; return value ?? 'none'; },

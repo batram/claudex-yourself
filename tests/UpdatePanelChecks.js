@@ -30,7 +30,7 @@ try {
   assert(!button.disabled && shadow.getElementById('details').textContent === 'Test failure', 'failure enables retry and remains visible');
   const complete = { check: { updateAvailable: false, installed: { version: '2.0.0.0' } }, operation: { state: 'completed', message: 'Controlled restart verified.', updatedAtUtc: now } };
   controller.update(complete);
-  assert(button.hidden && shadow.getElementById('badge').textContent === 'Updated', 'completion is visible after restart');
+  assert(button.hidden && shadow.getElementById('badge').getAttribute('aria-label') === 'Updated', 'completion is visible after restart');
   checkButton.click();
   controller.update(complete);
   assert(checkButton.disabled, 'check remains pending through an old status poll');
@@ -39,7 +39,7 @@ try {
   assert(!checkButton.disabled, 'check completes after its response');
   const blocked = { ...initial, check: { ...initial.check, downloadBlockedReason: 'The newer download is not ready yet.' } };
   controller.update(blocked);
-  assert(button.disabled && !checkButton.disabled && shadow.getElementById('badge').textContent === 'Update pending', 'unavailable package disables install but permits lightweight checks');
+  assert(button.disabled && !checkButton.disabled && shadow.getElementById('badge').getAttribute('aria-label') === 'Update pending', 'unavailable package disables install but permits lightweight checks');
   button.click();
   assert(controller.takeAction() === 'none', 'blocked installer cannot queue another download');
   controller.update({ ...initial, operation: { state: 'waiting', message: 'Old source unavailable', updatedAtUtc: '2000-01-01T00:00:00Z' }, checkFinishedAtUtc: now });
