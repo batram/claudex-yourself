@@ -275,7 +275,7 @@ internal static class CodexUpdates
                 throw new UpdateNotReadyException($"The downloaded package was rejected: {exception.Message} Check again will inspect the server before another download.");
             }
         }
-        await SetStatusAsync("staging", "Validating and staging the signed Windows package.", check.AvailableVersion);
+        await SetStatusAsync("staging", "Validating and staging the signed Windows package. If Windows requests administrator approval, approve it using this Windows account to continue.", check.AvailableVersion);
         await WindowsAsync("stage", "-PackagePath", path);
         await SetStatusAsync("ready", "Update downloaded, validated, and staged. Codex has not been closed.", check.AvailableVersion);
         return new("ready", path, check.AvailableVersion);
