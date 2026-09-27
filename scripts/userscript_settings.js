@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.1.0
+// @version       1.2.3
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos
@@ -9,6 +9,7 @@
 // @codex-tested  26.903.9818.0
 // @codex-tested  26.908.9136.0
 // @grant         none
+// @codex-tested  26.924.2738.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.userscript-settings");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
@@ -16,9 +17,10 @@ const preferencesKey = "claudex-yourself.userscripts.v1";
 window[stateKey]?.uninstall?.();
 
 const catalog = [
-  { id: "sidebar_usage", name: "Sidebar usage", description: "Shows all available usage limits above the profile row." },
+  { id: "sidebar_usage", name: "Sidebar usage", description: "Shows available usage limits in the sidebar rail." },
   { id: "hide_invite_a_friend", name: "Hide Invite a friend", description: "Hides the Invite a friend account-menu entry." },
-  { id: "hide_pets_button", name: "Hide pets button", description: "Hides the Show pet / Hide pet account-menu entry." }
+  { id: "hide_pets_button", name: "Hide Mini button", description: "Hides the Show Mini / Hide Mini account-menu entry." },
+  { id: "codex_updates", name: "Codex updates", description: "Shows the controlled Codex update companion." }
 ];
 const registry = window[registryKey] ??= new Map();
 const readPreferences = () => {
@@ -38,9 +40,10 @@ const style = document.createElement("style");
 style.dataset.claudexUserscriptSettings = "true";
 style.textContent = `
   .claudex-userscript-nav[hidden] { display:none !important; }
-  nav[data-claudex-userscript-panel-open] button:not(.claudex-userscript-nav):not(:hover),
+  [data-claudex-userscript-panel-open] button:not(.claudex-userscript-nav):not(:hover),
   .claudex-userscript-nav:not([aria-current='page']):not(:hover) { background-color:transparent !important; }
   .claudex-userscript-nav[aria-current='page'] { background-color:var(--color-primary-ghost-hover, var(--claudex-settings-selection, rgba(127,127,127,.12))) !important; }
+  .claudex-userscript-native-hidden { display:none !important; }
   .claudex-userscript-panel { margin:0 auto; display:flex; width:100%; max-width:48rem; flex-direction:column; color:inherit; }
   .claudex-userscript-panel header { padding-bottom:2rem; }
   .claudex-userscript-panel h1 { margin:0; font-size:20px; font-weight:400; }
@@ -67,7 +70,7 @@ style.textContent = `
 document.head.appendChild(style);
 
 let activePanel;
-let hiddenNativeContent;
+let hiddenNativeContent = [];
 let activeButton;
 let activeNav;
 let nativeSelections = [];
@@ -113,8 +116,11 @@ const closePanel = () => {
   usageOptions = undefined;
   activePanel?.remove();
   activePanel = undefined;
-  if (hiddenNativeContent) hiddenNativeContent.hidden = false;
-  hiddenNativeContent = undefined;
+  for (const entry of hiddenNativeContent) {
+    entry.element.classList.remove("claudex-userscript-native-hidden");
+    entry.element.hidden = entry.hidden;
+  }
+  hiddenNativeContent = [];
   activeButton?.removeAttribute("aria-current");
   activeButton?.classList.remove("bg-token-list-hover-background");
   activeButton = undefined;
@@ -125,18 +131,22 @@ const closePanel = () => {
   }
   nativeSelections = [];
 };
+window.addEventListener("claudex-close-userscript-settings", closePanel);
 const openPanel = (settingsNav, button) => {
   closePanel();
   // Find the content beside this settings navigation, regardless of the active page.
   let scroller;
   for (let container = settingsNav.parentElement; container && !scroller; container = container.parentElement) {
-    scroller = [...container.querySelectorAll("[class*='scrollbar-stable'][class*='overflow-y-auto']")]
-      .find(element => !element.contains(settingsNav) && !settingsNav.contains(element) && element.querySelector("h1"));
+    scroller = [...container.querySelectorAll("[class*='overflow-y-auto'], main")]
+      .find(element => !element.contains(settingsNav) && !settingsNav.contains(element) &&
+        (element.querySelector("h1") || element.querySelector("[role='heading']")));
   }
-  const nativeContent = scroller?.firstElementChild;
-  if (!scroller || !nativeContent) return;
-  hiddenNativeContent = nativeContent;
-  nativeContent.hidden = true;
+  if (!scroller) return;
+  hiddenNativeContent = [...scroller.children].map(element => ({ element, hidden:element.hidden }));
+  for (const entry of hiddenNativeContent) {
+    entry.element.hidden = true;
+    entry.element.classList.add("claudex-userscript-native-hidden");
+  }
   activeButton = button;
   activeNav = settingsNav;
   nativeSelections = [...settingsNav.querySelectorAll("button[aria-current='page']")];
@@ -192,28 +202,38 @@ let buttonTemplate;
 const installInto = settingsNav => {
   if (!navBindings.has(settingsNav)) {
     const onClick = event => {
-      const button = event.target.closest("button");
+      const button = event.target.closest("button, a, [role='link']");
       if (button && !button.classList.contains("claudex-userscript-nav") &&
-          (button.hasAttribute("data-settings-panel-slug") || button.hasAttribute("data-list-navigation-item") || button.getAttribute("role") === "link")) closePanel();
+          settingsNav.contains(button)) closePanel();
     };
     settingsNav.addEventListener("click", onClick, true);
     settingsNav.addEventListener("input", queueScan);
     navBindings.set(settingsNav, onClick);
   }
-  const anchor = settingsNav.querySelector("button[aria-label='Appearance']")
-    ?? settingsNav.querySelector("button[data-settings-panel-slug]");
+  const nativeItems = [...settingsNav.querySelectorAll("button, a, [role='link']")]
+    .filter(item => !item.classList.contains("claudex-userscript-nav"));
+  const anchor = nativeItems.find(item => item.getAttribute("aria-label") === "Appearance" ||
+    item.getAttribute("data-settings-panel-slug") === "appearance" ||
+    item.textContent?.trim() === "Appearance") ??
+    nativeItems.find(item => item.hasAttribute("data-settings-panel-slug"));
   if (anchor) buttonTemplate = anchor.cloneNode(true);
-  const query = (settingsNav.querySelector("input[role='searchbox']")?.value || "").trim().toLowerCase();
-  const target = query ? settingsNav.querySelector("div[class*='overflow-y-auto']") : anchor?.parentElement;
+  const query = (settingsNav.querySelector("input[role='searchbox'], input[placeholder='Search']")?.value || "").trim().toLowerCase();
+  const target = query ? (settingsNav.querySelector("div[class*='overflow-y-auto']") ?? anchor?.parentElement) : anchor?.parentElement;
   if (!target) return;
   let button = settingsNav.querySelector(".claudex-userscript-nav");
   if (!button) {
   settingsNav.dataset.claudexUserscriptSettings = "true";
-  button = buttonTemplate?.cloneNode(true) || document.createElement("button");
+  button = document.createElement("button");
+  if (buttonTemplate) {
+    button.className = buttonTemplate.className;
+    button.append(...[...buttonTemplate.childNodes].map(node => node.cloneNode(true)));
+  }
   button.type = "button";
   if (!buttonTemplate) button.className = "sidebar-item flex w-full items-center px-row-x py-row-y text-start hover:bg-primary-ghost-hover";
   button.removeAttribute("aria-current");
   button.removeAttribute("data-settings-panel-slug");
+  button.removeAttribute("data-list-navigation-item");
+  button.removeAttribute("href");
   button.classList.remove("bg-token-list-hover-background");
   for (const element of button.querySelectorAll("*")) {
     element.classList.remove("text-token-list-active-selection-foreground");
@@ -221,12 +241,17 @@ const installInto = settingsNav => {
   }
   button.classList.add("claudex-userscript-nav");
   button.setAttribute("aria-label", "User scripts settings");
-  const label = button.querySelector(".text-fade-truncate") ?? button.querySelector("span:last-child");
+  const label = [...button.querySelectorAll("span")].find(span => span.textContent?.trim() === "Appearance")
+    ?? button.querySelector(".text-fade-truncate") ?? button.querySelector("span:last-child");
   if (label) label.textContent = "User scripts";
   else button.textContent = "User scripts";
   button.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); openPanel(settingsNav, button); });
   }
-  if (button.parentElement !== target) target.appendChild(button);
+  // The new settings rows are wrapped by a tooltip. Put our row beside the
+  // native button instead of inside the tooltip trigger.
+  if (!query && anchor) {
+    if (button.previousElementSibling !== anchor) anchor.after(button);
+  } else if (button.parentElement !== target) target.appendChild(button);
   const searchText = "user scripts userscripts sidebar usage limits " + catalog.map(item => item.name).join(" ") + " " + (registry.get("sidebar_usage")?.getAvailableLimits?.() || []).map(item => item.name).join(" ");
   button.hidden = Boolean(query) && !query.split(/\s+/).every(word => searchText.toLowerCase().includes(word));
   if (activePanel?.isConnected && activeNav === settingsNav) {
@@ -239,16 +264,32 @@ const installInto = settingsNav => {
   }
 };
 const scan = root => {
-  const navs = root instanceof Element && root.matches("nav[aria-label='Settings']")
-    ? [root]
-    : [...(root.querySelectorAll?.("nav[aria-label='Settings']") || [])];
+  const navs = new Set(root.querySelectorAll?.("nav[aria-label='Settings']") || []);
+  for (const item of root.querySelectorAll?.("[data-settings-panel-slug='appearance'], button[aria-label='Appearance']") || []) {
+    const container = item.closest("nav, aside") ?? item.parentElement?.parentElement;
+    if (container) navs.add(container);
+  }
+  // The newer settings sidebar has no named nav. Its search field and Appearance
+  // entry still identify it without depending on generated layout class names.
+  for (const field of root.querySelectorAll?.("input[role='searchbox'], input[placeholder='Search']") || []) {
+    for (let container = field.parentElement; container && container !== document.body; container = container.parentElement) {
+      if ([...container.querySelectorAll("button, a, [role='link']")].some(item =>
+        item.getAttribute("aria-label") === "Appearance" || item.textContent?.trim() === "Appearance")) {
+        navs.add(container.closest("nav, aside") ?? container);
+        break;
+      }
+    }
+  }
   for (const settingsNav of navs) installInto(settingsNav);
 };
-let scanFrame;
+let scanQueued = false;
+let scanActive = true;
 const queueScan = () => {
-  if (scanFrame) return;
-  scanFrame = requestAnimationFrame(() => {
-    scanFrame = undefined;
+  if (scanQueued || !scanActive) return;
+  scanQueued = true;
+  queueMicrotask(() => {
+    scanQueued = false;
+    if (!scanActive) return;
     if (activePanel && !activePanel.isConnected) closePanel();
     for (const [nav, onClick] of navBindings) if (!nav.isConnected) {
       nav.removeEventListener("click", onClick, true);
@@ -263,7 +304,7 @@ const observer = new MutationObserver(queueScan);
 observer.observe(document.body, { childList:true, subtree:true });
 const uninstall = () => {
   observer.disconnect();
-  cancelAnimationFrame(scanFrame);
+  scanActive = false;
   for (const [nav, onClick] of navBindings) {
     nav.removeEventListener("click", onClick, true);
     nav.removeEventListener("input", queueScan);
@@ -271,9 +312,10 @@ const uninstall = () => {
   navBindings.clear();
   window.removeEventListener("claudex-usage-limits-changed", renderUsageOptions);
   window.removeEventListener("claudex-userscript-registered", renderUsageOptions);
+  window.removeEventListener("claudex-close-userscript-settings", closePanel);
   closePanel();
   style.remove();
-  document.querySelectorAll("nav[data-claudex-userscript-settings='true']").forEach(settingsNav => {
+  document.querySelectorAll("[data-claudex-userscript-settings='true']").forEach(settingsNav => {
     settingsNav.querySelector("[aria-label='User scripts settings']")?.remove();
     delete settingsNav.dataset.claudexUserscriptSettings;
   });

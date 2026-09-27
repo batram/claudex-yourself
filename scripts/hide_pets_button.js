@@ -1,13 +1,14 @@
 // ==ClaudexUserScript==
 // @name          Hide pets button
 // @id            hide_pets_button
-// @version       1.1.0
-// @description   Hides the Show pet / Hide pet account-menu entry.
+// @version       1.2.0
+// @description   Hides the Show Mini / Hide Mini account-menu entry.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
 // @codex-tested  26.901.5280.0
 // @grant         none
+// @codex-tested  26.924.2738.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.hide-pets-button");
 const previous = window[stateKey];
@@ -17,7 +18,7 @@ const scriptId = "hide_pets_button";
 const preferencesKey = "claudex-yourself.userscripts.v1";
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
 
-const labels = new Set(["show pet", "hide pet"]);
+const labels = new Set(["show pet", "hide pet", "show mini", "hide mini"]);
 const menuitemSelector = "[role='menuitem']";
 const normalize = text => (text || "").replace(/\s+/g, " ").trim().toLowerCase();
 const savedDisplays = new Map();
@@ -27,7 +28,7 @@ const isPetItem = element => {
       labels.has(normalize(element.textContent))) return true;
   // Codex now renders the label and keyboard shortcut in separate spans.
   // Match the main label exactly; a prefix match could hide unrelated commands.
-  return [...element.querySelectorAll("span.flex-1")].some(label =>
+  return [...element.querySelectorAll("span")].some(label =>
     label.closest(menuitemSelector) === element && labels.has(normalize(label.textContent)));
 };
 const restore = element => {

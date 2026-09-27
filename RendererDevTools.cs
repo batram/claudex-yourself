@@ -9,6 +9,12 @@ namespace ClaudexYourself;
 internal static class RendererDevTools
 {
     private static readonly Uri TargetListUri = new("http://127.0.0.1:9229/json/list");
+    internal static bool IsMainCodexPage(string? url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && uri.Scheme.Equals("app", StringComparison.OrdinalIgnoreCase)
+        && uri.Host == "-"
+        && uri.AbsolutePath.Equals("/index.html", StringComparison.OrdinalIgnoreCase)
+        && string.IsNullOrEmpty(uri.Query);
 
     internal static Task WaitForReadyAsync(TimeSpan timeout) => WaitForReadyAsync(async () =>
     {
@@ -217,7 +223,7 @@ internal static class RendererDevTools
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
             var targets = await http.GetFromJsonAsync<List<Target>>(TargetListUri) ?? [];
             var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
-                && item.Url.StartsWith("app://", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
+                && IsMainCodexPage(item.Url) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
                 ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");
             var session = new Session(timeout);
             await session._socket.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), session._timeout.Token);

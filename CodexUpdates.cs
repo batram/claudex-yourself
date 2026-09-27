@@ -168,6 +168,15 @@ internal static class CodexUpdates
         return status;
     }
 
+    private static async Task ClearRecoveredRelaunchFailureAsync()
+    {
+        var status = await ReadStatusAsync();
+        if (status.State != "failed" ||
+            !status.Message.Contains("controlled renderer did not become ready", StringComparison.OrdinalIgnoreCase) ||
+            status.TargetVersion != UserscriptMetadata.CurrentCodexVersion()) return;
+        await SetStatusAsync("current", $"Codex {status.TargetVersion} is running in controlled mode after the interrupted relaunch.", status.TargetVersion);
+    }
+
     private static async Task<PreparedUpdate> PrepareCommandAsync()
     {
         try { return await PrepareAsync(await CheckAsync()); }
@@ -567,12 +576,18 @@ internal static class CodexUpdates
         string? checkError = null;
         Task<UpdateCheck>? checking = null;
         DateTime? checkFinishedAtUtc = null;
+        var recoveryChecked = false;
         var missed = 0;
         while (missed < 30)
         {
             try
             {
                 var action = await RendererDevTools.EvaluateStringAsync("JSON.stringify(window[Symbol.for('claudex-yourself.codex-updates')]?.takeAction() ?? 'missing')", TimeSpan.FromSeconds(3));
+                if (!recoveryChecked)
+                {
+                    await ClearRecoveredRelaunchFailureAsync();
+                    recoveryChecked = true;
+                }
                 if (action == "\"missing\"") await Program.RunScriptAsync(source, "codex_updates");
                 if (action == "\"install\"")
                 {

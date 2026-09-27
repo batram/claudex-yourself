@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Codex updates
 // @id            codex_updates
-// @version       1.4.1
+// @version       1.4.6
 // @description   Shows Codex updates and the progress of the external claudex update worker.
 // @run-at        renderer-ready
 // @platform      windows
@@ -27,9 +27,13 @@ const dismissOutside = event => {
 };
 const place = () => {
   if (!root) return;
-  const help = document.querySelector('button[aria-label="Open help menu"]');
-  root.hidden = !help || !help.getClientRects().length;
-  if (help && (root.parentElement !== help.parentElement || root.nextElementSibling !== help)) help.before(root);
+  const profile = document.querySelector('button[aria-label="Open profile menu"], button[aria-label*="profile menu" i]');
+  const footer = profile?.parentElement?.parentElement?.parentElement?.parentElement;
+  root.hidden = !footer || !profile.getClientRects().length;
+  const compact = footer?.parentElement?.getBoundingClientRect().width < 90;
+  root.style.display = compact ? 'flex' : '';
+  root.style.marginInline = compact ? 'auto' : '';
+  if (footer && (root.parentElement !== footer.parentElement || root.nextElementSibling !== footer)) footer.before(root);
   if (!panel.hidden && !root.hidden) {
     const rect = badge.getBoundingClientRect();
     panel.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - panel.offsetWidth - 8))}px`;

@@ -1,12 +1,13 @@
 // ==ClaudexUserScript==
 // @name          Hide Invite a friend
 // @id            hide_invite_a_friend
-// @version       1.0.0
+// @version       1.1.0
 // @description   Hides the Invite a friend account-menu entry.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
-// @grant         codex-request
+// @grant         none
+// @codex-tested  26.924.2738.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.hide-invite-a-friend");
 const previous = window[stateKey];
@@ -16,15 +17,38 @@ const scriptId = "hide_invite_a_friend";
 const preferencesKey = "claudex-yourself.userscripts.v1";
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
 
+const menuitemSelector = "[role='menuitem']";
+const normalize = value => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+const savedDisplays = new Map();
+const isInviteItem = element => element.matches(menuitemSelector) && (
+  normalize(element.getAttribute("aria-label")) === "invite a friend" ||
+  normalize(element.textContent) === "invite a friend" ||
+  [...element.querySelectorAll("span")].some(span =>
+    span.closest(menuitemSelector) === element && normalize(span.textContent) === "invite a friend")
+);
+const restore = element => {
+  const saved = savedDisplays.get(element);
+  if (!saved) return;
+  if (saved.value) element.style.setProperty("display", saved.value, saved.priority);
+  else element.style.removeProperty("display");
+  delete element.dataset.claudexHideInvite;
+  savedDisplays.delete(element);
+};
 const hideMatching = root => {
-  const candidates = [];
-  if (root instanceof Element && root.matches("[role='menuitem']")) candidates.push(root);
+  const candidates = new Set();
+  const element = root instanceof Element ? root : root.parentElement;
+  const owner = element?.closest(menuitemSelector);
+  if (owner) candidates.add(owner);
   if (root instanceof Element || root instanceof Document) {
-    candidates.push(...root.querySelectorAll("[role='menuitem']"));
+    for (const item of root.querySelectorAll(menuitemSelector)) candidates.add(item);
   }
   let hidden = 0;
   for (const element of candidates) {
-    if (element.textContent?.trim().toLowerCase() !== "invite a friend") continue;
+    if (!isInviteItem(element)) { restore(element); continue; }
+    if (!savedDisplays.has(element)) savedDisplays.set(element, {
+      value:element.style.getPropertyValue("display"),
+      priority:element.style.getPropertyPriority("display")
+    });
     element.style.setProperty("display", "none", "important");
     element.dataset.claudexHideInvite = "true";
     hidden++;
@@ -37,22 +61,24 @@ const install = () => {
   observer?.disconnect();
   const hiddenNow = hideMatching(document);
   observer = new MutationObserver(records => {
+    for (const element of savedDisplays.keys()) {
+      if (!element.isConnected || !isInviteItem(element)) restore(element);
+    }
     for (const record of records) {
+      hideMatching(record.target);
       for (const node of record.addedNodes) {
-        if (node instanceof Element) hideMatching(node);
+        hideMatching(node);
       }
     }
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+  observer.observe(document.body, { childList:true, subtree:true, characterData:true, attributes:true,
+    attributeFilter:["role", "aria-label"] });
   return { installed: true, hiddenNow };
 };
 const uninstall = () => {
   observer?.disconnect();
   observer = undefined;
-  for (const element of document.querySelectorAll("[data-claudex-hide-invite='true']")) {
-    element.style.removeProperty("display");
-    delete element.dataset.claudexHideInvite;
-  }
+  for (const element of savedDisplays.keys()) restore(element);
   return { installed: false };
 };
 

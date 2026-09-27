@@ -1,14 +1,15 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.3.4
-// @description   Shows all available Codex usage limits above the profile row.
+// @version       1.4.6
+// @description   Shows all available Codex usage limits in the sidebar or compact rail.
 // @run-at        renderer-ready
 // @platform      windows, macos
 // @codex-tested  26.803.10989.0
 // @codex-tested  26.903.9818.0
 // @codex-tested  26.908.9136.0
 // @grant         none
+// @codex-tested  26.924.2738.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.sidebar-usage");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
@@ -25,13 +26,18 @@ let widget;
 let style;
 let apiClient;
 let mountQueued = false;
+let mountGeneration = 0;
 let navigationPending = false;
 let navigationError = "";
+let compact = false;
 
 const openUsageSettings = () => new Promise((resolve, reject) => {
   // Deliver to the renderer's message listener without importing private bundle exports.
   // Navigation is renderer-local; sendMessageFromView sends in the opposite direction.
-  const isOpen = () => Boolean(document.querySelector("[data-settings-panel-slug='usage'][aria-current='page']"));
+  window.dispatchEvent?.(new Event("claudex-close-userscript-settings"));
+  const isOpen = () => Boolean(document.querySelector("[data-settings-panel-slug='usage'][aria-current='page']")) ||
+    window.location.pathname?.endsWith("/settings/usage") ||
+    [...(document.querySelectorAll?.("h1, h2") || [])].some(heading => heading.textContent?.trim() === "Usage & billing");
   if (isOpen()) { resolve(); return; }
   let timeout;
   const navigationObserver = new MutationObserver(() => {
@@ -58,7 +64,7 @@ const renderNavigationStatus = () => {
     message.className = "claudex-usage-error";
     message.setAttribute("role", "alert");
     message.textContent = navigationError;
-    widget.appendChild(message);
+    (widget.querySelector(".claudex-usage-popover") ?? widget).appendChild(message);
   }
 };
 
@@ -127,17 +133,25 @@ const normalizeUsage = data => {
 };
 const getApiClient = async () => {
   if (apiClient) return apiClient;
-  const source = document.querySelector("link[rel='modulepreload'][href*='/app-initial-'][href$='.js']")?.href;
-  if (!source) throw new Error("Codex application module was not found.");
-  const module = await import(source);
-  apiClient = Object.values(module).find(value => value && typeof value === "object" && typeof value.safeGet === "function");
+  const sources = ["app-initial-", "app-shared-"].map(name =>
+    document.querySelector(`link[rel='modulepreload'][href*='/${name}'][href$='.js']`)?.href).filter(Boolean);
+  if (!sources.length) throw new Error("Codex application modules were not found.");
+  for (const source of sources) {
+    const module = await import(source);
+    apiClient = Object.values(module).find(value => value && typeof value === "object" && typeof value.safeGet === "function");
+    if (apiClient) break;
+  }
   if (!apiClient) throw new Error("Codex usage client was not found.");
   return apiClient;
 };
 const render = (data, stale = false) => {
   if (!widget) return;
+  const wasOpen = widget.querySelector?.(".claudex-usage-popover:not([hidden])") != null;
+  const remaining = data?.limits?.find(isLimitVisible)?.windows?.[0]?.remaining;
+  const summary = Number.isFinite(remaining) ? `${remaining}% left` : "Usage limits";
+  const toggle = `<button type="button" class="claudex-usage-toggle" aria-label="Show usage limits, ${escapeHtml(summary)}" aria-expanded="false" title="${escapeHtml(summary)}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1"/></svg>${Number.isFinite(remaining) ? `<span>${remaining}%</span>` : ""}</button>`;
   if (!data) {
-    widget.innerHTML = `<div class="claudex-usage-heading">${usageLink}<span>Loading…</span></div>`;
+    widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden><div class="claudex-usage-heading">${usageLink}<span>Loading…</span></div></div>`;
     renderNavigationStatus();
     return;
   }
@@ -151,21 +165,48 @@ const render = (data, stale = false) => {
           <div class="claudex-usage-track"><span class="${value.reached ? "reached" : ""}" style="width:${value.remaining}%"></span></div>
         </div>`).join("")}
     </div>`).join("");
-  widget.innerHTML = `
+  widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden>
     <div class="claudex-usage-heading">${usageLink}<span>${escapeHtml(plan)}${stale ? " &middot; cached" : ""}</span></div>
     ${rows || '<div class="claudex-usage-empty">No usage limits selected.</div>'}
-    ${data.credits != null ? `<div class="claudex-usage-credits"><span>Credits</span><strong>${escapeHtml(data.credits)}</strong></div>` : ""}`;
+    ${data.credits != null ? `<div class="claudex-usage-credits"><span>Credits</span><strong>${escapeHtml(data.credits)}</strong></div>` : ""}</div>`;
+  if (wasOpen && compact) openPopover();
   renderNavigationStatus();
 };
+const closePopover = () => {
+  const panel = widget?.querySelector(".claudex-usage-popover");
+  if (panel) panel.hidden = true;
+  widget?.querySelector(".claudex-usage-toggle")?.setAttribute("aria-expanded", "false");
+};
+const openPopover = () => {
+  const panel = widget?.querySelector(".claudex-usage-popover");
+  const toggle = widget?.querySelector(".claudex-usage-toggle");
+  if (!panel || !toggle) return;
+  panel.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+  const rect = toggle.getBoundingClientRect();
+  panel.style.left = `${Math.max(8, Math.min(rect.right + 10, innerWidth - panel.offsetWidth - 8))}px`;
+  panel.style.bottom = `${Math.max(8, Math.min(innerHeight - rect.bottom, innerHeight - panel.offsetHeight - 8))}px`;
+};
+const dismissPopover = event => {
+  if (widget && !widget.contains(event.target)) closePopover();
+};
 const ensureWidget = () => {
-  const profile = document.querySelector("button[aria-label='Open profile menu']");
+  const profile = document.querySelector("button[aria-label='Open profile menu'], button[aria-label*='profile menu' i]");
   const footer = profile?.parentElement?.parentElement?.parentElement?.parentElement;
   if (!footer?.parentElement) return;
+  compact = footer.parentElement.getBoundingClientRect().width < 90;
   if (!widget) {
     widget = document.createElement("section");
     widget.className = "claudex-sidebar-usage";
     widget.setAttribute("aria-label", "Usage remaining");
     widget.addEventListener("click", async event => {
+      const toggle = event.target.closest(".claudex-usage-toggle");
+      if (toggle) {
+        event.preventDefault();
+        if (widget.querySelector(".claudex-usage-popover")?.hidden) openPopover();
+        else closePopover();
+        return;
+      }
       const hide = event.target.closest(".claudex-usage-hide");
       if (hide) {
         event.preventDefault();
@@ -198,12 +239,23 @@ const ensureWidget = () => {
     });
     render(readCache(), true);
   }
-  if (widget.parentElement !== footer.parentElement || widget.nextElementSibling !== footer) footer.before(widget);
+  widget.classList.toggle("claudex-usage-compact", compact);
+  const updates = document.querySelector("#claudex-codex-updates");
+  const insertionPoint = updates?.parentElement === footer.parentElement ? updates : footer;
+  if (widget.parentElement !== insertionPoint.parentElement || widget.nextElementSibling !== insertionPoint) {
+    closePopover();
+    insertionPoint.before(widget);
+  }
 };
 const queueMount = () => {
   if (mountQueued) return;
   mountQueued = true;
-  requestAnimationFrame(() => { mountQueued = false; ensureWidget(); });
+  const generation = mountGeneration;
+  queueMicrotask(() => {
+    if (generation !== mountGeneration) return;
+    mountQueued = false;
+    if (observer) ensureWidget();
+  });
 };
 const refresh = async () => {
   try {
@@ -219,12 +271,25 @@ const refresh = async () => {
 };
 const install = () => {
   observer?.disconnect();
+  mountGeneration++;
+  mountQueued = false;
+  document.removeEventListener("pointerdown", dismissPopover, true);
   clearInterval(refreshTimer);
   style?.remove();
   style = document.createElement("style");
   style.dataset.claudexSidebarUsage = "true";
   style.textContent = `
     .claudex-sidebar-usage { box-sizing:border-box; width:100%; flex:none; padding:12px 14px 14px; border-top:1px solid var(--color-token-border, rgba(127,127,127,.15)); color:var(--color-token-text-secondary); }
+    .claudex-usage-toggle { display:none; align-items:center; flex-direction:column; justify-content:center; gap:1px; width:36px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:var(--color-token-text-secondary, currentColor); cursor:pointer; }
+    .claudex-usage-toggle span { font-size:9px; font-weight:600; line-height:10px; font-variant-numeric:tabular-nums; }
+    .claudex-usage-toggle:hover,.claudex-usage-toggle[aria-expanded='true'] { background:var(--color-primary-ghost-hover, rgba(127,127,127,.12)); }
+    .claudex-usage-toggle:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
+    .claudex-usage-popover[hidden] { display:none!important; }
+    .claudex-sidebar-usage:not(.claudex-usage-compact) .claudex-usage-popover { display:block!important; }
+    .claudex-usage-compact { width:auto; padding:0; border:0; display:flex; justify-content:center; }
+    .claudex-usage-compact .claudex-usage-toggle { display:flex; }
+    .claudex-usage-compact .claudex-usage-popover { position:fixed; z-index:2147483000; box-sizing:border-box; width:min(280px,calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto; padding:16px; border:1px solid var(--color-token-border, rgba(127,127,127,.2)); border-radius:14px; background:var(--color-background-panel, Canvas); color:var(--color-token-text-secondary, CanvasText); box-shadow:0 8px 28px #0003; }
+    .claudex-usage-compact .claudex-usage-heading { font-size:12px; letter-spacing:0; text-transform:none; opacity:1; }
     .claudex-usage-heading,.claudex-usage-meta,.claudex-usage-credits { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .claudex-usage-heading { margin-bottom:10px; font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; opacity:.6; }
     .claudex-usage-link { color:inherit; text-decoration:none; cursor:pointer; border-radius:2px; }
@@ -235,7 +300,7 @@ const install = () => {
     .claudex-usage-title { display:flex; align-items:center; gap:8px; margin-bottom:5px; min-height:20px; }
     .claudex-usage-name { flex:1; min-width:0; overflow:hidden; font-size:12px; font-weight:600; line-height:16px; text-overflow:ellipsis; white-space:nowrap; color:var(--color-token-text-primary, currentColor); }
     .claudex-usage-hide { display:flex; align-items:center; justify-content:center; flex:none; width:20px; height:20px; padding:0; border:0; border-radius:4px; background:transparent; color:inherit; font:16px/1 sans-serif; opacity:0; pointer-events:none; cursor:pointer; }
-    .claudex-sidebar-usage:hover .claudex-usage-hide { opacity:.5; pointer-events:auto; }
+    .claudex-sidebar-usage:hover .claudex-usage-hide,.claudex-usage-compact .claudex-usage-hide { opacity:.5; pointer-events:auto; }
     .claudex-usage-hide:focus-visible { pointer-events:auto; }
     .claudex-usage-hide:hover,.claudex-usage-hide:focus-visible { opacity:1; background:var(--color-primary-ghost-hover, rgba(127,127,127,.12)); }
     .claudex-usage-hide:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
@@ -249,19 +314,26 @@ const install = () => {
     .claudex-usage-credits { margin-top:8px; padding-top:7px; border-top:1px solid var(--color-token-border, rgba(127,127,127,.15)); font-size:10px; }
   `;
   document.head.appendChild(style);
+  document.querySelectorAll(".claudex-sidebar-usage").forEach(element => element.remove());
+  widget = undefined;
   ensureWidget();
   observer = new MutationObserver(queueMount);
   observer.observe(document.body, { childList:true, subtree:true });
+  document.addEventListener("pointerdown", dismissPopover, true);
   refresh();
   refreshTimer = setInterval(refresh, 60000);
   return { installed:true, cached:Boolean(readCache()) };
 };
 const uninstall = () => {
   observer?.disconnect();
+  mountGeneration++;
+  mountQueued = false;
+  document.removeEventListener("pointerdown", dismissPopover, true);
   observer = undefined;
   clearInterval(refreshTimer);
   refreshTimer = undefined;
   widget?.remove();
+  document.querySelectorAll(".claudex-sidebar-usage").forEach(element => element.remove());
   widget = undefined;
   style?.remove();
   style = undefined;

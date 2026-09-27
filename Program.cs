@@ -74,7 +74,7 @@ internal static class Program
     {
         var package = FindCodexPackage();
         var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
-        var switches = ChromiumSwitches();
+        var switches = ChromiumSwitches(profile);
         var environment = BuildWindowsEnvironmentBlock(new[]
         {
             "BUILD_FLAVOR=dev",
@@ -94,7 +94,11 @@ internal static class Program
             ThrowForHResult(debugSettings.EnableDebugging(package.FullName, debuggerCommandLine, environmentPointer), "enable Codex package debugging");
             debuggingEnabled = true;
             var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
-            ThrowForHResult(activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out processId), "activate Codex");
+            // Electron's commandLine.appendSwitch now reaches renderer subprocesses
+            // without opening the DevTools HTTP listener. Pass the switches at
+            // process creation as well so Chromium sees them before bootstrap.
+            var activationArguments = $"--remote-debugging-port={DevToolsPort} --remote-debugging-address=127.0.0.1 --user-data-dir=\"{profile}\"";
+            ThrowForHResult(activationManager.ActivateApplication($"{package.FamilyName}!App", activationArguments, ActivateOptions.None, out processId), "activate Codex");
             // Activation success is not renderer readiness. Keep the launch environment in
             // effect through startup; disabling it immediately can race package activation.
             RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
@@ -130,9 +134,9 @@ internal static class Program
 
         var start = new ProcessStartInfo(executable) { UseShellExecute = false };
         start.Environment["BUILD_FLAVOR"] = "dev";
-        start.Environment["CODEX_ELECTRON_USER_DATA_PATH"] = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
-        start.Environment["CODEX_ELECTRON_CHROMIUM_SWITCHES"] = ChromiumSwitches();
+        var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
+        start.Environment["CODEX_ELECTRON_USER_DATA_PATH"] = profile;
+        start.Environment["CODEX_ELECTRON_CHROMIUM_SWITCHES"] = ChromiumSwitches(profile);
         var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start Codex.app.");
         Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
         process.Dispose();
@@ -140,11 +144,17 @@ internal static class Program
         return 0;
     }
 
-    private static string ChromiumSwitches() => JsonSerializer.Serialize(new Dictionary<string, string?>
+    private static string ChromiumSwitches(string profile)
     {
-        ["remote-debugging-port"] = DevToolsPort.ToString(),
-        ["remote-debugging-address"] = "127.0.0.1"
-    });
+        var switches = new Dictionary<string, string?>
+        {
+            ["remote-debugging-port"] = DevToolsPort.ToString(),
+            ["remote-debugging-address"] = "127.0.0.1"
+        };
+        // Keep the Windows profile explicit for Chromium's remote debugging rules.
+        if (OperatingSystem.IsWindows()) switches["user-data-dir"] = profile;
+        return JsonSerializer.Serialize(switches);
+    }
 
     private static string BuildWindowsEnvironmentBlock(IEnumerable<string> entries) =>
         string.Join('\0', entries.Order(StringComparer.OrdinalIgnoreCase)) + "\0\0";
@@ -431,6 +441,14 @@ internal static class Program
         var parsed = UserscriptMetadata.Parse(metadataSmoke);
         if (parsed.Id != "test" || !parsed.TestedCodexVersions.Contains("1.2.3")) throw new InvalidOperationException("Userscript metadata parsing failed.");
         if (!UserscriptMetadata.AddTestedVersion(metadataSmoke, "2.0.0").Contains("@codex-tested  2.0.0")) throw new InvalidOperationException("Userscript metadata update failed.");
+        if (OperatingSystem.IsWindows() &&
+            (IsDesktopExecutablePath(@"C:\Users\mjb\AppData\Local\OpenAI\Codex\bin\codex.exe") ||
+             !IsDesktopExecutablePath(@"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__example\app\ChatGPT.exe")))
+            throw new InvalidOperationException("Desktop process identification failed.");
+        if (!RendererDevTools.IsMainCodexPage("app://-/index.html") ||
+            RendererDevTools.IsMainCodexPage("app://-/index.html?initialRoute=%2Favatar-overlay") ||
+            RendererDevTools.IsMainCodexPage("app://-/detached-window.html?initialRoute=%2Fdetached-window"))
+            throw new InvalidOperationException("Main renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) Console.WriteLine("Warning: controlled launch is unsupported on this OS.");
         Console.WriteLine("Self-test passed.");
@@ -453,7 +471,7 @@ internal static class Program
     private static DevToolsTarget? SelectCodexPage(IEnumerable<DevToolsTarget> targets) => targets.FirstOrDefault(target =>
         string.Equals(target.Type, "page", StringComparison.OrdinalIgnoreCase)
         && !string.IsNullOrWhiteSpace(target.WebSocketDebuggerUrl)
-        && !target.Url.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase));
+        && RendererDevTools.IsMainCodexPage(target.Url));
 
     private static async Task<string> ReceiveMessageAsync(ClientWebSocket socket, CancellationToken cancellationToken)
     {
@@ -470,10 +488,22 @@ internal static class Program
 
     private static bool IsCodexRunning() => new[] { "ChatGPT", "Codex" }.SelectMany(Process.GetProcessesByName).Any(process =>
     {
-        try { return process.MainModule?.FileName?.Contains("Codex", StringComparison.OrdinalIgnoreCase) == true; }
-        catch { return true; }
+        try
+        {
+            var path = process.MainModule?.FileName;
+            if (path is null) return false;
+            // The Codex CLI is also named codex.exe and runs while this MCP tool
+            // is in use. Only the Desktop executable should block controlled launch.
+            return IsDesktopExecutablePath(path);
+        }
+        catch { return process.ProcessName.Equals(OperatingSystem.IsWindows() ? "ChatGPT" : "Codex", StringComparison.OrdinalIgnoreCase); }
         finally { process.Dispose(); }
     });
+
+    private static bool IsDesktopExecutablePath(string path) => OperatingSystem.IsWindows()
+        ? path.EndsWith(Path.Combine("app", "ChatGPT.exe"), StringComparison.OrdinalIgnoreCase)
+          && path.Contains("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase)
+        : path.Contains("Codex.app/Contents/MacOS/Codex", StringComparison.OrdinalIgnoreCase);
 
     private static int ActivateRunningCodex()
     {
