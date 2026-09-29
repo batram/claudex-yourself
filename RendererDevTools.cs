@@ -1,5 +1,4 @@
 using System.Net.WebSockets;
-using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -8,7 +7,6 @@ namespace ClaudexYourself;
 
 internal static class RendererDevTools
 {
-    private static readonly Uri TargetListUri = new("http://127.0.0.1:9229/json/list");
     internal static bool IsMainCodexPage(string? url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri)
         && uri.Scheme.Equals("app", StringComparison.OrdinalIgnoreCase)
@@ -221,7 +219,7 @@ internal static class RendererDevTools
         public static async Task<Session> ConnectAsync(TimeSpan timeout)
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            var targets = await http.GetFromJsonAsync<List<Target>>(TargetListUri) ?? [];
+            var targets = JsonSerializer.Deserialize<List<Target>>(await DevToolsLoopback.ReadMainTargetListAsync(http)) ?? [];
             var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
                 && IsMainCodexPage(item.Url) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
                 ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");

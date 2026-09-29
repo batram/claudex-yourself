@@ -95,12 +95,12 @@ internal static class AutoloadScripts
         {
             try
             {
-                var json = await client.GetStringAsync("http://127.0.0.1:9229/json/list");
-                if (json.Contains("\"type\": \"page\"", StringComparison.OrdinalIgnoreCase)
-                    || json.Contains("\"type\":\"page\"", StringComparison.OrdinalIgnoreCase)) return;
+                await DevToolsLoopback.ReadMainTargetListAsync(client);
+                return;
             }
             catch (HttpRequestException) { }
             catch (TaskCanceledException) { }
+            catch (InvalidOperationException) { }
             await Task.Delay(500);
         }
         throw new TimeoutException("Codex renderer did not become ready within 60 seconds.");

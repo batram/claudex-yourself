@@ -9,7 +9,6 @@ namespace ClaudexYourself;
 internal static class Program
 {
     private const int DevToolsPort = 9229;
-    private static readonly Uri DevToolsListUri = new($"http://127.0.0.1:{DevToolsPort}/json/list");
     internal static readonly string UserScriptDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "claudex-yourself", "scripts");
@@ -24,7 +23,9 @@ internal static class Program
             var command = arguments.FirstOrDefault()?.ToLowerInvariant() ?? "help";
             return command switch
             {
-                "launch" => Launch(),
+                "launch" => arguments.Length == 1
+                    ? Launch()
+                    : Fail("launch does not accept options."),
                 "package-debugger" => PackageDebugger(arguments.Skip(1).ToArray()),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
@@ -434,7 +435,6 @@ internal static class Program
     private static int SelfTest()
     {
         Directory.CreateDirectory(UserScriptDirectory);
-        if (DevToolsListUri.Port != DevToolsPort) throw new InvalidOperationException("DevTools endpoint configuration failed.");
         var environment = BuildWindowsEnvironmentBlock(["Z=value", "a=value"]);
         if (environment != "a=value\0Z=value\0\0") throw new InvalidOperationException("Windows environment block construction failed.");
         const string metadataSmoke = "// ==ClaudexUserScript==\n// @name Test\n// @id test\n// @version 1.0.0\n// @description Test script.\n// @run-at renderer-ready\n// @platform windows, macos\n// @codex-tested 1.2.3\n// @grant codex-request\n// ==/ClaudexUserScript==\nreturn true;";
@@ -455,18 +455,8 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<IReadOnlyList<DevToolsTarget>> ReadTargetsAsync(HttpClient client)
-    {
-        try
-        {
-            await using var stream = await client.GetStreamAsync(DevToolsListUri);
-            return await JsonSerializer.DeserializeAsync<List<DevToolsTarget>>(stream) ?? [];
-        }
-        catch (HttpRequestException exception)
-        {
-            throw new InvalidOperationException("The Codex DevTools endpoint is not running. Launch Codex using claudex-yourself.", exception);
-        }
-    }
+    private static async Task<IReadOnlyList<DevToolsTarget>> ReadTargetsAsync(HttpClient client) =>
+        JsonSerializer.Deserialize<List<DevToolsTarget>>(await DevToolsLoopback.ReadMainTargetListAsync(client)) ?? [];
 
     private static DevToolsTarget? SelectCodexPage(IEnumerable<DevToolsTarget> targets) => targets.FirstOrDefault(target =>
         string.Equals(target.Type, "page", StringComparison.OrdinalIgnoreCase)

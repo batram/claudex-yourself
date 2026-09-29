@@ -151,6 +151,8 @@ Read the [Windows update guide](docs/windows-updates.md) for candidate selection
 
 `list` prints the per-user script directory without requiring a live renderer. On Windows, state normally lives under `%APPDATA%\claudex-yourself`, including scripts, captures, and update status. Review screenshots and diagnostic output for private information before sharing them.
 
+The DevTools endpoint is checked on both IPv4 and IPv6 loopback. On Windows, Chromium can bind `::1:9229` when `127.0.0.1:9229` is unavailable; a connection failure on IPv4 alone does not mean the controlled renderer is down.
+
 ## Development
 
 See [AGENTS.md](AGENTS.md) for the repository map, build and validation commands, and coding-agent instructions.
