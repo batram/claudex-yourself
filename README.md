@@ -53,7 +53,7 @@ Keep the published directory together, including `scripts/`, `update/`, DLL, and
 
 ### 2. Launch Codex
 
-Install Codex Desktop and quit it completely before the first controlled launch. Launching while an ordinary Codex process is running activates that process; it does not retrofit the DevTools endpoint.
+Install Codex Desktop and quit it completely before the first controlled launch. If Codex is already running, the launcher first verifies its controlled renderer, then activates it and reapplies autoload scripts. If the renderer is unavailable, launch fails with instructions to quit and reopen Codex; it cannot retrofit the DevTools endpoint into an existing process.
 
 Windows:
 
@@ -95,6 +95,10 @@ Wait for the initial `reloaded` result, then press Ctrl+C to stop watching. Leav
 Repeat with `userscript_settings.js` to add **User scripts** to Settings. Publish `hide_invite_a_friend.js` and `hide_pets_button.js` the same way if you want those switches to control installed scripts. The settings page catalogs those three selectable scripts; it is not an automatic catalog of arbitrary scripts.
 
 See the [userscript guide](docs/userscripts.md) for metadata, live development, autoload, switches, and MCP publication.
+
+### Windows notification clicks
+
+The Windows launcher preserves Codex's packaged production app identity and default profile and adds only the debugging arguments needed for renderer access. This lets Codex handle its own notification delivery and clicks. A controlled restart is needed when switching from a previously launched process with a different identity or profile; an already running process keeps its original launch arguments.
 
 ## MCP setup
 

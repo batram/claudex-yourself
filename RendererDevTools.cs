@@ -34,7 +34,7 @@ internal static class RendererDevTools
             if (await probe()) return;
             await Task.Delay(interval);
         }
-        throw new TimeoutException("Codex was activated, but its controlled renderer did not become ready. Close Codex and reopen it through claudex-yourself; the restart has not been confirmed.");
+        throw new TimeoutException("The controlled Codex renderer did not become ready. Close Codex completely and reopen it through claudex-yourself; controlled launch has not been confirmed.");
     }
 
     public static async Task<string> EvaluateStringAsync(string expression, TimeSpan timeout)

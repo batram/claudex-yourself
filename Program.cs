@@ -62,9 +62,16 @@ internal static class Program
     {
         if (IsCodexRunning())
         {
-            if (requireControlled)
-                RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
-            return ActivateRunningCodex();
+            // Foreground activation cannot add DevTools to an existing process.
+            // Never report a successful controlled launch without a usable renderer.
+            RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
+            var result = ActivateRunningCodex();
+            if (result == 0)
+            {
+                StartAutoloadWorker();
+                CodexUpdates.StartWatcher();
+            }
+            return result;
         }
         if (OperatingSystem.IsWindows()) return LaunchWindows();
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
@@ -74,14 +81,9 @@ internal static class Program
     private static int LaunchWindows()
     {
         var package = FindCodexPackage();
-        var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
-        var switches = ChromiumSwitches(profile);
-        var environment = BuildWindowsEnvironmentBlock(new[]
-        {
-            "BUILD_FLAVOR=dev",
-            $"CODEX_ELECTRON_USER_DATA_PATH={profile}",
-            $"CODEX_ELECTRON_CHROMIUM_SWITCHES={switches}"
-        });
+        // Keep the packaged app's production identity so its native notification
+        // activation targets the same Windows app and profile. Only add debugging arguments.
+        var environment = BuildWindowsEnvironmentBlock(Array.Empty<string>());
 
         var debugSettings = (IPackageDebugSettings)new PackageDebugSettings();
         var environmentPointer = Marshal.StringToHGlobalUni(environment);
@@ -95,13 +97,10 @@ internal static class Program
             ThrowForHResult(debugSettings.EnableDebugging(package.FullName, debuggerCommandLine, environmentPointer), "enable Codex package debugging");
             debuggingEnabled = true;
             var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
-            // Electron's commandLine.appendSwitch now reaches renderer subprocesses
-            // without opening the DevTools HTTP listener. Pass the switches at
-            // process creation as well so Chromium sees them before bootstrap.
-            var activationArguments = $"--remote-debugging-port={DevToolsPort} --remote-debugging-address=127.0.0.1 --user-data-dir=\"{profile}\"";
+            // Chromium must see these switches at process creation.
+            var activationArguments = $"--remote-debugging-port={DevToolsPort} --remote-debugging-address=127.0.0.1";
             ThrowForHResult(activationManager.ActivateApplication($"{package.FamilyName}!App", activationArguments, ActivateOptions.None, out processId), "activate Codex");
-            // Activation success is not renderer readiness. Keep the launch environment in
-            // effect through startup; disabling it immediately can race package activation.
+            // Activation success is not renderer readiness.
             RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         }
         catch (Exception exception)
