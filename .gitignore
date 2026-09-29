@@ -2,3 +2,4 @@ bin/
 obj/
 docs/local/
 artifacts/
+.archive-version-check/app/resources/app.asar
