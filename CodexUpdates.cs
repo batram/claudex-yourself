@@ -22,7 +22,7 @@ internal static class CodexUpdates
     internal sealed record UpdateCandidate(string Version, string PackageUrl, string Source, string? CachedPackagePath = null);
     internal sealed record DownloadReceipt(string Url, string? ETag, long Length, DateTime LastWriteTimeUtc);
     private sealed class UpdateNotReadyException(string message) : InvalidOperationException(message);
-    internal sealed record UpdateStatus(string State, string Message, string? TargetVersion = null, DateTime? UpdatedAtUtc = null, int? WorkerPid = null, DateTime? WorkerStartedUtc = null);
+    internal sealed record UpdateStatus(string State, string Message, string? TargetVersion = null, DateTime? UpdatedAtUtc = null, int? WorkerPid = null, DateTime? WorkerStartedUtc = null, string? FailureKind = null);
 
     public static async Task<int> CommandAsync(string[] arguments)
     {
@@ -50,9 +50,20 @@ internal static class CodexUpdates
             ?? throw new InvalidOperationException("OpenAI returned an empty update manifest.");
         var check = ValidateRelease(installed, release);
         var local = ReadCachedCandidates(check, Root).ToList();
-        if (check.UpdateAvailable && FindStagedManifest(check) is not null)
-            local.Add(new(check.AvailableVersion, VersionedPackageUrl(check), "windows-staged"));
+        string? stagedWarning = null;
+        var packageNames = new List<string> { $"OpenAI.Codex_{check.AvailableVersion}_{installed.Architecture}__2p2nqsd0c76g0" };
+        try
+        {
+            packageNames.AddRange(JsonSerializer.Deserialize<string[]>(await WindowsAsync("staged-candidates"), Json) ?? []);
+        }
+        catch (InvalidOperationException exception)
+        {
+            stagedWarning = $"Could not check Windows deployment history: {exception.Message}";
+        }
+        local.AddRange(ReadStagedCandidates(check, packageNames));
         check = await ResolveAvailableAsync(client, check, local);
+        if (stagedWarning is not null)
+            check = check with { SourceWarning = string.Join(" ", new[] { check.SourceWarning, stagedWarning }.Where(s => s is not null)) };
         if (check.UpdateAvailable && check.Source != "windows-staged")
             check = check with { DownloadBlockedReason = await GetDownloadBlockAsync(client, check, check.CachedPackagePath ?? CachePath(check)) };
         return check;
@@ -171,10 +182,29 @@ internal static class CodexUpdates
     private static async Task ClearRecoveredRelaunchFailureAsync()
     {
         var status = await ReadStatusAsync();
-        if (status.State != "failed" ||
-            !status.Message.Contains("controlled renderer did not become ready", StringComparison.OrdinalIgnoreCase) ||
-            status.TargetVersion != UserscriptMetadata.CurrentCodexVersion()) return;
-        await SetStatusAsync("current", $"Codex {status.TargetVersion} is running in controlled mode after the interrupted relaunch.", status.TargetVersion);
+        if (!IsRelaunchFailure(status)) return;
+        // Never clear a failure while an installation worker still owns the operation.
+        using var operationLock = TryLock("install.lock");
+        if (operationLock is null) return;
+        status = await ReadStatusAsync();
+        var recovered = await RecoverRelaunchStatusAsync(status, UserscriptMetadata.CurrentCodexVersion(), async () =>
+            await RendererDevTools.EvaluateStringAsync("JSON.stringify(document.readyState === 'complete' && Boolean(document.body) && typeof window.electronBridge?.sendMessageFromView === 'function')", TimeSpan.FromSeconds(3)) == "true");
+        if (recovered != status)
+            await SetStatusAsync(recovered.State, recovered.Message, recovered.TargetVersion);
+    }
+
+    private static bool IsRelaunchFailure(UpdateStatus status) => status.State == "failed" &&
+        (status.FailureKind == "controlled-relaunch" ||
+         // Preserve recovery for status files written before structured failure kinds.
+         status.FailureKind is null && (status.Message.Contains("controlled renderer did not become ready", StringComparison.OrdinalIgnoreCase) ||
+             status.Message.Contains("controlled Codex renderer did not become ready", StringComparison.OrdinalIgnoreCase) ||
+             status.Message == "The updater stopped during restarting. Check the installed version before retrying."));
+
+    internal static async Task<UpdateStatus> RecoverRelaunchStatusAsync(UpdateStatus status, string installedVersion, Func<Task<bool>> ready)
+    {
+        if (!IsRelaunchFailure(status) || !Version.TryParse(status.TargetVersion, out var target) ||
+            !Version.TryParse(installedVersion, out var installed) || installed < target || !await ready()) return status;
+        return status with { State = "completed", Message = $"Codex {installedVersion} is running in controlled mode after the interrupted relaunch.", FailureKind = null };
     }
 
     private static async Task<PreparedUpdate> PrepareCommandAsync()
@@ -206,6 +236,7 @@ internal static class CodexUpdates
         if (operationLock is null) return 0;
         string? target = null;
         var appExited = false;
+        var restarting = false;
         try
         {
             await SetStatusAsync("checking", "Checking for a Codex update.");
@@ -231,6 +262,7 @@ internal static class CodexUpdates
             if (installed.Status != "Ok" || ParseVersion(installed.Version) < ParseVersion(target))
                 throw new InvalidOperationException($"Windows did not complete registration: expected {target}, found {installed.Version}, status {installed.Status}.");
             await SetStatusAsync("restarting", $"Installed Codex {installed.Version}. Restarting in controlled mode.", target);
+            restarting = true;
             var launched = Program.Launch(requireControlled: true);
             if (launched != 0) throw new InvalidOperationException("Update installed but controlled relaunch failed.");
             await SetStatusAsync("completed", $"Updated to Codex {installed.Version} and relaunched in controlled mode.", target);
@@ -238,12 +270,12 @@ internal static class CodexUpdates
         }
         catch (Exception exception)
         {
-            await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message, target);
+            await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message, target, restarting ? "controlled-relaunch" : null);
             // Make a failure visible again if we already closed the app. Keep the failure status intact.
             if (appExited && exception is not TimeoutException)
             {
                 try { Program.Launch(); }
-                catch (Exception launchError) { await SetStatusAsync("failed", $"{exception.Message} Relaunch also failed: {launchError.Message}", target); }
+                catch (Exception launchError) { await SetStatusAsync("failed", $"{exception.Message} Relaunch also failed: {launchError.Message}", target, restarting ? "controlled-relaunch" : null); }
             }
             return 1;
         }
@@ -429,6 +461,33 @@ internal static class CodexUpdates
         ValidateIdentity(stream, check);
     }
 
+    internal static IEnumerable<UpdateCandidate> ReadStagedCandidates(UpdateCheck check, IEnumerable<string> packageNames)
+    {
+        if (string.IsNullOrEmpty(check.Installed.InstallLocation)) yield break;
+        var parent = Path.GetDirectoryName(check.Installed.InstallLocation);
+        if (parent is null || !Directory.Exists(parent)) yield break;
+        // Store delivery can stage an intermediate release while the announcement advances.
+        // Deployment records are discovery hints only. Validate the real manifest in
+        // Windows' protected package root; never use a path supplied by an event.
+        var suffix = $"_{check.Installed.Architecture}__2p2nqsd0c76g0";
+        foreach (var name in packageNames.Distinct())
+        {
+            if (!name.StartsWith("OpenAI.Codex_", StringComparison.Ordinal) || !name.EndsWith(suffix, StringComparison.Ordinal)
+                || name.Length <= "OpenAI.Codex_".Length + suffix.Length) continue;
+            var version = name["OpenAI.Codex_".Length..^suffix.Length];
+            UpdateCandidate? candidate = null;
+            try
+            {
+                if (ParseVersion(version) <= ParseVersion(check.Installed.Version)) continue;
+                var staged = check with { AvailableVersion = version };
+                if (FindStagedManifest(staged) is not null)
+                    candidate = new(version, VersionedPackageUrl(staged), "windows-staged");
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or IOException or XmlException) { }
+            if (candidate is not null) yield return candidate;
+        }
+    }
+
     internal static string? FindStagedManifest(UpdateCheck check)
     {
         // Derive the sibling from Windows' registered package location, never from a downloaded path.
@@ -536,7 +595,7 @@ internal static class CodexUpdates
         return (await output).Trim();
     }
 
-    private static async Task SetStatusAsync(string state, string message, string? target = null)
+    private static async Task SetStatusAsync(string state, string message, string? target = null, string? failureKind = null)
     {
         Directory.CreateDirectory(Root);
         await StatusGate.WaitAsync();
@@ -544,7 +603,7 @@ internal static class CodexUpdates
         {
             var temporary = StatusPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             using var current = Process.GetCurrentProcess();
-            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(new UpdateStatus(state, message, target, DateTime.UtcNow, current.Id, current.StartTime.ToUniversalTime()), Json));
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(new UpdateStatus(state, message, target, DateTime.UtcNow, current.Id, current.StartTime.ToUniversalTime(), failureKind), Json));
             File.Move(temporary, StatusPath, overwrite: true);
         }
         finally { StatusGate.Release(); }
@@ -576,18 +635,13 @@ internal static class CodexUpdates
         string? checkError = null;
         Task<UpdateCheck>? checking = null;
         DateTime? checkFinishedAtUtc = null;
-        var recoveryChecked = false;
         var missed = 0;
         while (missed < 30)
         {
             try
             {
                 var action = await RendererDevTools.EvaluateStringAsync("JSON.stringify(window[Symbol.for('claudex-yourself.codex-updates')]?.takeAction() ?? 'missing')", TimeSpan.FromSeconds(3));
-                if (!recoveryChecked)
-                {
-                    await ClearRecoveredRelaunchFailureAsync();
-                    recoveryChecked = true;
-                }
+                await ClearRecoveredRelaunchFailureAsync();
                 if (action == "\"missing\"") await Program.RunScriptAsync(source, "codex_updates");
                 if (action == "\"install\"")
                 {

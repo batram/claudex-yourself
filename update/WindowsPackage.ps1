@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('inspect','stage','install','register-staged','detach')][string]$Action,
+    [Parameter(Mandatory=$true)][ValidateSet('inspect','staged-candidates','stage','install','register-staged','detach')][string]$Action,
     [string]$PackagePath,
     [string]$Launcher,
     [switch]$FinishTargetShutdown,
@@ -17,6 +17,18 @@ try {
             $package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
             if (-not $package) { throw 'OpenAI.Codex is not installed for this Windows user.' }
             [ordered]@{ fullName=$package.PackageFullName; familyName=$package.PackageFamilyName; version=$package.Version.ToString(); publisher=$package.Publisher; architecture=$package.Architecture.ToString().ToLowerInvariant(); status=$package.Status.ToString(); installLocation=$package.InstallLocation } | ConvertTo-Json -Compress
+        }
+        'staged-candidates' {
+            # The normal user cannot enumerate WindowsApps or all users' packages.
+            # Recent deployment records identify possible staged versions, including
+            # Store downloads older than the current announcement. C# verifies each
+            # candidate's protected manifest before allowing it to become an update.
+            $names = @(Get-WinEvent -LogName 'Microsoft-Windows-AppXDeploymentServer/Operational' -MaxEvents 2048 -ErrorAction Stop | ForEach-Object {
+                foreach ($candidateMatch in [regex]::Matches($_.ToXml(), 'OpenAI\.Codex_[0-9.]+_(?:x64|arm64)__2p2nqsd0c76g0')) {
+                    $candidateMatch.Value
+                }
+            } | Sort-Object -Unique)
+            ConvertTo-Json -InputObject $names -Compress
         }
         'stage' {
             # Windows validates the MSIX signature; staging does not close or replace the running app.

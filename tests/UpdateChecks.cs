@@ -20,6 +20,7 @@ internal static class UpdateChecks
         Assert(!CodexUpdates.IsPackageInUse("0x80070005 Access denied"), "do not retry arbitrary access denied");
         Assert(CodexUpdates.IsPackageInUse("0x80073D02"), "retry package-in-use");
         await CheckInstallRecoveryAsync();
+        await CheckRelaunchRecoveryAsync();
         await CheckDownloadRetriesAsync(check);
         await CheckAvailableVersionsAsync(check);
         var path = Path.Combine(Path.GetTempPath(), $"claudex-update-test-{Guid.NewGuid():N}.msix");
@@ -45,8 +46,22 @@ internal static class UpdateChecks
             Directory.CreateDirectory(stagedDirectory);
             await File.WriteAllTextAsync(stagedPath, "<Package><Identity Name=\"OpenAI.Codex\" Publisher=\"CN=Test\" Version=\"26.901.5280.0\" ProcessorArchitecture=\"x64\" /></Package>");
             Assert(CodexUpdates.FindStagedManifest(stagedCheck) == stagedPath, "exact staged package");
+            var laterAnnouncement = stagedCheck with { AvailableVersion = "26.928.1915.0" };
+            var stagedNames = new[] { Path.GetFileName(stagedDirectory), "Other.App_26.999.1.0_x64__2p2nqsd0c76g0", "OpenAI.Codex_../../bad_x64__2p2nqsd0c76g0" };
+            var stagedCandidates = CodexUpdates.ReadStagedCandidates(laterAnnouncement, stagedNames).ToArray();
+            Assert(stagedCandidates.Length == 1 && stagedCandidates[0].Version == check.AvailableVersion,
+                "discover staged intermediate release when announcement has advanced");
+            using (var missingDownloads = new HttpClient(new HeaderHandler(_ => new(System.Net.HttpStatusCode.NotFound))))
+            {
+                var resolved = await CodexUpdates.ResolveAvailableAsync(missingDownloads, laterAnnouncement, stagedCandidates);
+                Assert(resolved.UpdateAvailable && resolved.Source == "windows-staged" && resolved.AvailableVersion == check.AvailableVersion,
+                    "staged intermediate update is installable even without a public download");
+            }
+            Assert(!CodexUpdates.ReadStagedCandidates(stagedCheck with { Installed = installed with { Version = check.AvailableVersion, InstallLocation = stagedCheck.Installed.InstallLocation } }, stagedNames).Any(),
+                "staged current version is not offered again");
             await File.WriteAllTextAsync(stagedPath, "<Package><Identity Name=\"Other.App\" Publisher=\"CN=Test\" Version=\"26.901.5280.0\" ProcessorArchitecture=\"x64\" /></Package>");
             Reject(() => CodexUpdates.FindStagedManifest(stagedCheck));
+            Assert(!CodexUpdates.ReadStagedCandidates(laterAnnouncement, stagedNames).Any(), "invalid staged identity is excluded from discovery");
         }
         finally
         {
@@ -74,6 +89,29 @@ internal static class UpdateChecks
             throw new Exception("An uncontrolled launch must not report update success.");
         }
         catch (TimeoutException) { }
+    }
+
+    private static async Task CheckRelaunchRecoveryAsync()
+    {
+        var failed = new CodexUpdates.UpdateStatus("failed",
+            "The controlled Codex renderer did not become ready. Close Codex completely and reopen it through claudex-yourself; controlled launch has not been confirmed.", "26.924.6891.0");
+        var probes = 0;
+        Task<bool> Ready() { probes++; return Task.FromResult(true); }
+        var waiting = await CodexUpdates.RecoverRelaunchStatusAsync(failed, failed.TargetVersion!, () => Task.FromResult(false));
+        Assert(waiting == failed, "unready renderer preserves restart failure");
+        var recovered = await CodexUpdates.RecoverRelaunchStatusAsync(waiting, failed.TargetVersion!, Ready);
+        Assert(recovered.State == "completed" && recovered.Message.Contains("controlled mode"), "subsequent ready poll clears actual persisted timeout wording");
+        var legacy = failed with { Message = "Codex was activated, but its controlled renderer did not become ready." };
+        Assert((await CodexUpdates.RecoverRelaunchStatusAsync(legacy, failed.TargetVersion!, Ready)).State == "completed", "legacy timeout still recovers");
+        var structured = failed with { Message = "Future wording", FailureKind = "controlled-relaunch" };
+        Assert((await CodexUpdates.RecoverRelaunchStatusAsync(structured, "26.928.1915.0", Ready)).State == "completed", "structured failure recovers after a later installed version");
+        var before = probes;
+        foreach (var status in new[] { failed with { State = "restarting" }, failed with { Message = "Package signature failed" }, failed with { FailureKind = "installation" }, failed with { TargetVersion = null } })
+            Assert(await CodexUpdates.RecoverRelaunchStatusAsync(status, "26.924.6891.0", Ready) == status, "unrelated or active operation is never cleared");
+        Assert(await CodexUpdates.RecoverRelaunchStatusAsync(failed, "26.924.2738.0", Ready) == failed, "older installed version cannot recover failed update");
+        Assert(probes == before, "ineligible failures do not probe renderer");
+        var interrupted = failed with { Message = "The updater stopped during restarting. Check the installed version before retrying." };
+        Assert((await CodexUpdates.RecoverRelaunchStatusAsync(interrupted, failed.TargetVersion!, Ready)).State == "completed", "dead restart worker recovers once installation and renderer are verified");
     }
 
     private static async Task CheckInstallRecoveryAsync()
