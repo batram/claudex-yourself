@@ -102,17 +102,7 @@ internal sealed record UserscriptMetadata(
         }
         if (OperatingSystem.IsMacOS())
         {
-            var bundle = new[] { "/Applications/Codex.app", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Applications/Codex.app") }.FirstOrDefault(Directory.Exists)
-                ?? throw new FileNotFoundException("Codex.app was not found.");
-            using var process = Process.Start(new ProcessStartInfo("/usr/bin/defaults")
-            {
-                UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
-                ArgumentList = { "read", Path.Combine(bundle, "Contents/Info"), "CFBundleVersion" }
-            }) ?? throw new InvalidOperationException("Could not query Codex.app version.");
-            var version = process.StandardOutput.ReadToEnd().Trim();
-            process.WaitForExit();
-            if (process.ExitCode != 0 || version.Length == 0) throw new InvalidOperationException("Could not determine Codex.app version.");
-            return version;
+            return MacCodexApp.Find().Version;
         }
         throw new PlatformNotSupportedException("Codex Desktop version detection supports Windows and macOS.");
     }

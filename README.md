@@ -11,7 +11,8 @@ This is an independent project using internal Codex Desktop interfaces, not an o
 | Platform                      | Status                                                                                |
 | ----------------------------- | ------------------------------------------------------------------------------------- |
 | Windows x64                   | Implemented and live-tested                                                           |
-| macOS Apple Silicon and Intel | Build targets and launcher implemented; live launch still needs verification on a Mac |
+| macOS Apple Silicon           | Build, controlled launch, renderer access, and MCP hot reload verified on app build `12947` |
+| macOS Intel                   | Build target and launcher implemented; native testing still needed                     |
 | Linux                         | Controlled Codex Desktop launch is not implemented                                    |
 
 The Windows updater handles stable `OpenAI.Codex` packages on x64 and Arm64. That package support does not establish end-to-end Windows Arm64 launcher testing.
@@ -51,6 +52,12 @@ sh ./build.sh osx-x64
 
 Keep the published directory together, including `scripts/`, `update/`, DLL, and runtime configuration files. The build does not add the executable to PATH.
 
+For a Mac installation that does not need a separately installed runtime, publish a self-contained build (use `osx-x64` on Intel):
+
+```bash
+dotnet publish ClaudexYourself.csproj -c Release -r osx-arm64 --self-contained true -o bin
+```
+
 ### 2. Launch Codex
 
 Install Codex Desktop and quit it completely before the first controlled launch. If Codex is already running, the launcher first verifies its controlled renderer, then activates it and reapplies autoload scripts. If the renderer is unavailable, launch fails with instructions to quit and reopen Codex; it cannot retrofit the DevTools endpoint into an existing process.
@@ -69,7 +76,9 @@ macOS:
 ./bin/claudex-yourself status
 ```
 
-Windows uses the installed Codex package. macOS looks for `Codex.app` in `/Applications` and `~/Applications`. The launcher requests a DevTools endpoint at `127.0.0.1:9229` and uses the Codex profile under the platform's application-data directory.
+Windows uses the installed Codex package. macOS looks for `Codex.app` or `ChatGPT.app` in `/Applications` and `~/Applications`, verifies the `com.openai.codex` bundle identity, and reads the executable name from `Info.plist`. The classic ChatGPT app is not a matching installation. The launcher requests a DevTools endpoint at `127.0.0.1:9229` and preserves the app's normal build flavor and profile. On macOS this also preserves the native updater. Launch succeeds only after the main renderer and its preload bridge are ready.
+
+When setting up Claudex from inside Codex on macOS, finish active work before quitting the app. Then run `./bin/claudex-yourself launch` from Terminal and reopen the chat. The debugging endpoint cannot be added to the already-running process. An organization-settings startup dialog must be resolved through the app's normal sign-in and network setup before renderer verification can succeed.
 
 On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut.
 

@@ -126,34 +126,17 @@ internal static class Program
 
     private static int LaunchMacOS()
     {
-        var executable = new[]
-        {
-            "/Applications/Codex.app/Contents/MacOS/Codex",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Applications/Codex.app/Contents/MacOS/Codex")
-        }.FirstOrDefault(File.Exists) ?? throw new FileNotFoundException("Codex.app was not found in /Applications or ~/Applications.");
-
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false };
-        start.Environment["BUILD_FLAVOR"] = "dev";
-        var profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Codex");
-        start.Environment["CODEX_ELECTRON_USER_DATA_PATH"] = profile;
-        start.Environment["CODEX_ELECTRON_CHROMIUM_SWITCHES"] = ChromiumSwitches(profile);
-        var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start Codex.app.");
+        var app = MacCodexApp.Find();
+        var start = new ProcessStartInfo(app.ExecutablePath) { UseShellExecute = false };
+        // Pass Chromium switches at process creation, preserving the app's normal
+        // build flavor, profile and native updater.
+        start.ArgumentList.Add($"--remote-debugging-port={DevToolsPort}");
+        start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start Codex Desktop.");
+        RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
-        process.Dispose();
         StartAutoloadWorker();
         return 0;
-    }
-
-    private static string ChromiumSwitches(string profile)
-    {
-        var switches = new Dictionary<string, string?>
-        {
-            ["remote-debugging-port"] = DevToolsPort.ToString(),
-            ["remote-debugging-address"] = "127.0.0.1"
-        };
-        // Keep the Windows profile explicit for Chromium's remote debugging rules.
-        if (OperatingSystem.IsWindows()) switches["user-data-dir"] = profile;
-        return JsonSerializer.Serialize(switches);
     }
 
     private static string BuildWindowsEnvironmentBlock(IEnumerable<string> entries) =>
@@ -362,7 +345,7 @@ internal static class Program
         process.WaitForExit();
         if (process.ExitCode != 0) throw new InvalidOperationException($"Codex MCP configuration failed: {error}".Trim());
         Console.Write(output);
-        Console.WriteLine("Configured claudex-yourself for Codex. Run 'claudex-yourself reload' once to load it without restarting Codex.");
+        Console.WriteLine("Configured claudex-yourself for Codex. Run 'claudex-yourself run reload-mcp' once to load it without restarting Codex.");
         return 0;
     }
 
@@ -449,6 +432,7 @@ internal static class Program
             RendererDevTools.IsMainCodexPage("app://-/detached-window.html?initialRoute=%2Fdetached-window"))
             throw new InvalidOperationException("Main renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
+        if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) Console.WriteLine("Warning: controlled launch is unsupported on this OS.");
         Console.WriteLine("Self-test passed.");
         return 0;
@@ -492,12 +476,24 @@ internal static class Program
     private static bool IsDesktopExecutablePath(string path) => OperatingSystem.IsWindows()
         ? path.EndsWith(Path.Combine("app", "ChatGPT.exe"), StringComparison.OrdinalIgnoreCase)
           && path.Contains("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase)
-        : path.Contains("Codex.app/Contents/MacOS/Codex", StringComparison.OrdinalIgnoreCase);
+        : OperatingSystem.IsMacOS() && MacCodexApp.IsDesktopExecutable(path);
 
     private static int ActivateRunningCodex()
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            using var process = Process.Start(new ProcessStartInfo("/usr/bin/open")
+            {
+                UseShellExecute = false,
+                ArgumentList = { "-a", MacCodexApp.Find().BundlePath }
+            }) ?? throw new InvalidOperationException("Could not activate Codex Desktop.");
+            process.WaitForExit();
+            if (process.ExitCode != 0) throw new InvalidOperationException("Could not activate Codex Desktop.");
+            Console.WriteLine("Activated the running Codex application.");
+            return 0;
+        }
         if (!OperatingSystem.IsWindows())
-            return Fail("Codex is already running, but foreground activation is currently Windows-only.");
+            return Fail("Foreground activation supports Windows and macOS.");
 
         var package = FindCodexPackage();
         var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
