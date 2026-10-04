@@ -258,7 +258,7 @@ internal static class Program
             ?? throw new FileNotFoundException($"Script '{nameOrPath}' was not found. Run 'claudex-yourself list' to see available scripts.");
     }
 
-    internal static async Task<ScriptResult> RunScriptAsync(string source, string scriptName)
+    internal static async Task<ScriptResult> RunScriptAsync(string source, string scriptName, string? webSocketDebuggerUrl = null)
     {
         var sourceLiteral = JsonSerializer.Serialize(source);
         var nameLiteral = JsonSerializer.Serialize(scriptName);
@@ -304,7 +304,7 @@ internal static class Program
             })()
             """;
 
-        var value = await RendererDevTools.EvaluateStringAsync(expression, TimeSpan.FromSeconds(120));
+        var value = await RendererDevTools.EvaluateStringAsync(expression, TimeSpan.FromSeconds(120), webSocketDebuggerUrl);
         using var document = JsonDocument.Parse(value);
         var logs = document.RootElement.GetProperty("logs").EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToArray();
         return new ScriptResult(logs, document.RootElement.GetProperty("result").Clone());
@@ -431,6 +431,14 @@ internal static class Program
             RendererDevTools.IsMainCodexPage("app://-/index.html?initialRoute=%2Favatar-overlay") ||
             RendererDevTools.IsMainCodexPage("app://-/detached-window.html?initialRoute=%2Fdetached-window"))
             throw new InvalidOperationException("Main renderer identification failed.");
+        if (!RendererDevTools.IsUserscriptPage("app://-/index.html") ||
+            !RendererDevTools.IsUserscriptPage("app://-/index.html?initialRoute=%2Flocal%2Ftest") ||
+            !RendererDevTools.IsUserscriptPage("app://-/index.html?initialRoute=%2Fremote%2Ftest") ||
+            RendererDevTools.IsUserscriptPage("app://-/detached-window.html?initialRoute=%2Fdetached-window") ||
+            RendererDevTools.IsUserscriptPage("app://-/index.html?initialRoute=%2Favatar-overlay") ||
+            RendererDevTools.IsUserscriptPage("https://example.com/detached-window.html") ||
+            RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
+            throw new InvalidOperationException("Userscript renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) Console.WriteLine("Warning: controlled launch is unsupported on this OS.");

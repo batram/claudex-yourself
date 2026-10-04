@@ -7,6 +7,23 @@ namespace ClaudexYourself;
 
 internal static class RendererDevTools
 {
+    internal static bool IsUserscriptPage(string? url)
+    {
+        if (IsMainCodexPage(url)) return true;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || !uri.Scheme.Equals("app", StringComparison.OrdinalIgnoreCase)
+            || uri.Host != "-" || !uri.AbsolutePath.Equals("/index.html", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var parameter in uri.Query.TrimStart('?').Split('&'))
+        {
+            var pair = parameter.Split('=', 2);
+            if (pair.Length != 2 || pair[0] != "initialRoute") continue;
+            var route = Uri.UnescapeDataString(pair[1]);
+            return route.StartsWith("/local/", StringComparison.Ordinal)
+                || route.StartsWith("/remote/", StringComparison.Ordinal);
+        }
+        return false;
+    }
+
     internal static bool IsMainCodexPage(string? url) =>
         Uri.TryCreate(url, UriKind.Absolute, out var uri)
         && uri.Scheme.Equals("app", StringComparison.OrdinalIgnoreCase)
@@ -37,9 +54,9 @@ internal static class RendererDevTools
         throw new TimeoutException("The controlled Codex renderer did not become ready. Close Codex completely and reopen it through claudex-yourself; controlled launch has not been confirmed.");
     }
 
-    public static async Task<string> EvaluateStringAsync(string expression, TimeSpan timeout)
+    public static async Task<string> EvaluateStringAsync(string expression, TimeSpan timeout, string? webSocketDebuggerUrl = null)
     {
-        await using var session = await Session.ConnectAsync(timeout);
+        await using var session = await Session.ConnectAsync(timeout, webSocketDebuggerUrl);
         var remote = await session.EvaluateAsync(expression);
         if (!remote.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
             throw new InvalidOperationException($"Renderer returned no string value: {remote.GetRawText()}");
@@ -216,8 +233,15 @@ internal static class RendererDevTools
 
         private Session(TimeSpan timeout) => _timeout = new CancellationTokenSource(timeout);
 
-        public static async Task<Session> ConnectAsync(TimeSpan timeout)
+        public static async Task<Session> ConnectAsync(TimeSpan timeout, string? webSocketDebuggerUrl = null)
         {
+            if (webSocketDebuggerUrl is not null)
+            {
+                var explicitSession = new Session(timeout);
+                try { await explicitSession._socket.ConnectAsync(new Uri(webSocketDebuggerUrl), explicitSession._timeout.Token); }
+                catch { await explicitSession.DisposeAsync(); throw; }
+                return explicitSession;
+            }
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
             var targets = JsonSerializer.Deserialize<List<Target>>(await DevToolsLoopback.ReadMainTargetListAsync(http)) ?? [];
             var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)

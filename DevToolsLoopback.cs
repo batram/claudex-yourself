@@ -30,7 +30,7 @@ internal static class DevToolsLoopback
                         && type.GetString()?.Equals("page", StringComparison.OrdinalIgnoreCase) == true
                         && target.TryGetProperty("url", out var url)
                         && url.ValueKind == JsonValueKind.String
-                        && RendererDevTools.IsMainCodexPage(url.GetString()))
+                        && RendererDevTools.IsUserscriptPage(url.GetString()))
                     {
                         _lastSuccessfulUri = uri;
                         return json;

@@ -12,7 +12,7 @@ claudex-yourself autoload hide_pets_button on
 
 The per-user script directory is printed by `status` and `list`. `run-all` executes only that user directory, alphabetically; ordinary bundled scripts are not included in that command. The Windows Updates companion is loaded separately by the launcher.
 
-`autoload <name> on|off` controls whether a per-user script runs after the next controlled launch. The launcher starts a detached worker, waits up to 60 seconds for the renderer, and records each script result without delaying the launcher itself. `list` marks enabled entries with `[autoload]`.
+`autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and reads the enabled list again for new windows. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
 
 ## In-app switches
 
