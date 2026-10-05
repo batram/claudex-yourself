@@ -14,6 +14,8 @@ The per-user script directory is printed by `status` and `list`. `run-all` execu
 
 `autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and reads the enabled list again for new windows. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
 
+Session-window autoload was also verified on macOS Apple Silicon with Codex build `13100`: opening a local chat through **Open in new window** installed all four enabled scripts (`sidebar_usage`, `hide_invite_a_friend`, `hide_pets_button`, and `userscript_settings`) in both the main and new session renderers. With a controlled renderer, an active autoload watcher, and a session window open, run `node tests/AutoloadWindowChecks.js` on Windows or macOS to check the enabled scripts against each window's live runtime. This verifies window autoload; it does not mark every script's individual feature set as tested on that Codex build.
+
 ## In-app switches
 
 `userscript_settings.js` adds a **User scripts** page to Codex Settings using only renderer JavaScript. It stores preferences in Codex `localStorage`; it does not read the filesystem or modify `autoload.json`.
