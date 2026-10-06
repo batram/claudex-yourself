@@ -53,7 +53,7 @@ sh ./build.sh linux-x64
 sh ./build.sh linux-arm64
 ```
 
-Keep the published directory together, including `scripts/`, `update/`, DLL, and runtime configuration files. The build does not add the executable to PATH.
+Keep the published directory together, including `scripts/`, `update/`, `claudex.ico`, DLL, and runtime configuration files. The build does not add the executable to PATH. If a running Claudex MCP server or background worker locks published files, stop that process before rebuilding its directory, or publish to a separate directory for validation.
 
 For a Mac installation that does not need a separately installed runtime, publish a self-contained build (use `osx-x64` on Intel):
 
@@ -63,7 +63,7 @@ dotnet publish ClaudexYourself.csproj -c Release -r osx-arm64 --self-contained t
 
 ### 2. Launch Codex
 
-Install Codex Desktop and quit it completely before the first controlled launch. If Codex is already running, the launcher first verifies its controlled renderer, then activates it and reapplies autoload scripts. If the renderer is unavailable, launch fails with instructions to quit and reopen Codex; it cannot retrofit the DevTools endpoint into an existing process.
+Install Codex Desktop and quit it completely before the first controlled launch. If Codex is already running, the launcher first verifies its controlled renderer, then activates it and ensures the autoload watcher is running. An existing watcher keeps its per-document execution state; activation does not re-execute scripts that it already applied. If the renderer is unavailable, launch fails with instructions to quit and reopen Codex; it cannot retrofit the DevTools endpoint into an existing process.
 
 Windows:
 
@@ -93,7 +93,7 @@ For Linux without a system .NET runtime, publish a self-contained build:
 dotnet publish ClaudexYourself.csproj -c Release -r linux-x64 --self-contained true -o bin
 ```
 
-On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut.
+On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut with the Claudex icon and the installed Codex package's AppUserModelID. Run the command from the published executable you intend to keep: the shortcut stores its absolute path. Unpin the old launcher and pin this shortcut, then verify that running Codex windows group with it. Changing a shortcut's icon alone does not fix a mismatched app identity, and Explorer can retain old pin information until you repin. The shortcut continues to start Codex through Claudex, enabling renderer control and autoload scripts. Recreate and repin it after moving the published directory.
 
 The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
 
@@ -114,7 +114,7 @@ claudex-yourself dev .\scripts\sidebar_usage.js --autoload
 
 Wait for the initial `reloaded` result, then press Ctrl+C to stop watching. Leaving the command running reloads the script whenever its source changes. On macOS, use `./scripts/sidebar_usage.js`.
 
-Repeat with `userscript_settings.js` to add **User scripts** to Settings. Publish `hide_invite_a_friend.js` and `hide_pets_button.js` the same way if you want those switches to control installed scripts. The settings page catalogs those three selectable scripts; it is not an automatic catalog of arbitrary scripts.
+Repeat with `userscript_settings.js` to add **User scripts** to Settings. Publish `hide_invite_a_friend.js` and `hide_pets_button.js` the same way if you want those switches to control installed scripts. The settings page includes those three scripts, the Windows update controller, and additional registered custom controllers. It does not scan script files; unloaded or unsupported controllers have disabled switches.
 
 See the [userscript guide](docs/userscripts.md) for metadata, live development, autoload, switches, and MCP publication.
 
@@ -149,7 +149,7 @@ Script files are read fresh on each call; JavaScript edits do not require an MCP
 
 ## Windows updates
 
-Controlled launches use Codex's `dev` build flavor, where its native updater is disabled. Claudex adds an **Updates** panel that checks for stable Windows releases on startup and every 15 minutes. Installation quits and restarts Codex and can interrupt active work.
+Controlled launches preserve Codex's packaged production identity and add the local debugging endpoint. Claudex adds an **Updates** panel that checks for stable Windows releases on startup and every 15 minutes. Installation quits and restarts Codex and can interrupt active work.
 
 ```powershell
 claudex-yourself update check

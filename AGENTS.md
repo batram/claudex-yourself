@@ -9,6 +9,7 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 ## Repository map
 
 - `Program.cs`, `RendererDevTools.cs`, and `ClaudexMcpServer.cs`: CLI, renderer control, and MCP entry points.
+- `WindowsShortcut.cs`, `MacCodexApp.cs`, and `LinuxCodexApp.cs`: Windows shortcut identity and platform-specific desktop discovery.
 - `UserscriptMetadata.cs`, `UserscriptDevelopment.cs`, and `AutoloadScripts.cs`: userscript metadata, publishing, execution, and autoload behavior.
 - `scripts/*.js`: bundled userscript sources. These are the canonical repository copies.
 - `CodexUpdates.cs`, `update/WindowsPackage.ps1`: Windows update discovery, validation, and deployment.
@@ -50,10 +51,10 @@ Explicit runtime builds:
 .\build.ps1 osx-x64
 ```
 
-macOS build:
+macOS and Linux build:
 
 ```bash
-./build.sh
+sh ./build.sh
 ```
 
 MCP smoke test after building:
@@ -88,13 +89,13 @@ Script files are read fresh on each MCP call; ordinary userscript edits and depl
 
 ## CLI deployment fallback
 
-The CLI is expected to be available on `PATH` in newly started sessions. Resolve it before use:
+The build does not add the CLI to `PATH`. If it has been installed on `PATH`, resolve it before use:
 
 ```powershell
 Get-Command claudex-yourself
 ```
 
-An already-running shell may retain its old `PATH`. If resolution fails in such a session, use the repository executable directly:
+An already-running shell may retain its old `PATH`. If resolution fails, use the published executable directly (explicit runtime builds use `bin/<runtime>/`):
 
 ```powershell
 .\bin\claudex-yourself.exe <command>

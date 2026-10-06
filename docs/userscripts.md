@@ -12,7 +12,7 @@ claudex-yourself autoload hide_pets_button on
 
 The per-user script directory is printed by `status` and `list`. `run-all` executes only that user directory, alphabetically; ordinary bundled scripts are not included in that command. The Windows Updates companion is loaded separately by the launcher.
 
-`autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and reads the enabled list again for new windows. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
+`autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and rereads the enabled list on every poll, applying newly enabled scripts to existing windows too. Disabling autoload does not uninstall a controller already running in a window; use its in-app switch or reload the window. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
 
 Session-window autoload was also verified on macOS Apple Silicon with Codex build `13100`: opening a local chat through **Open in new window** installed all four enabled scripts (`sidebar_usage`, `hide_invite_a_friend`, `hide_pets_button`, and `userscript_settings`) in both the main and new session renderers. With a controlled renderer, an active autoload watcher, and a session window open, run `node tests/AutoloadWindowChecks.js` on Windows or macOS to check the enabled scripts against each window's live runtime. This verifies window autoload; it does not mark every script's individual feature set as tested on that Codex build.
 
@@ -20,10 +20,12 @@ Session-window autoload was also verified on macOS Apple Silicon with Codex buil
 
 `userscript_settings.js` adds **Claudex - User scripts** to Codex Settings. Its switches reflect the reversible controllers actually loaded in the current window, including registered custom scripts. Unloaded scripts and unsupported platform features are visibly disabled. Switch preferences live in Codex `localStorage`; leave selectable scripts enabled for autoload so their controllers remain available on future launches.
 
+A selectable script executes at renderer startup, but its controller installs only when its in-app preference is enabled. Switches apply immediately to loaded controllers and save the resulting preference. The built-in catalog includes `sidebar_usage`, `hide_invite_a_friend`, `hide_pets_button`, and the Windows-only `codex_updates` companion. The `hide_pets_button` filename is retained for compatibility; its visible label is **Hide Mini button**. Registered custom controllers appear alongside installed scripts.
+
 The page uses one card per script, combining its enable switch, script-specific options, title-line version, update actions, and source URL. Disabled cards use a subdued background and stay in place when toggled. Sidebar usage’s limit controls live in its own card under **Show in sidebar**. The local controller provides:
 
 - **Claudex Yourself:** shows the controller version, checks a configurable JSON release manifest, and offers **Open release** when a newer version is available. This checks Claudex itself, separately from the Windows Codex package updater. It does not replace the executable or restart Codex.
-- **Your scripts:** lists per-user scripts and loaded controllers together. Each installed script has an compact **Update settings** disclosure, **Check now**, and **Update to v…** when a newer version is available. Progress, errors, and update previews appear within the same card. Source URL drafts and open disclosures survive refreshes.
+- **Your scripts:** lists per-user scripts and loaded controllers together. Each installed script has a compact **Update settings** disclosure, **Check now**, and **Update to v…** when a newer version is available. Progress, errors, and update previews appear within the same card. Source URL drafts and open disclosures survive refreshes.
 - **Add script:** opens a URL form that accepts a GitHub file link, a raw GitHub URL, or a direct HTTP(S) URL on a file server. **Preview script** downloads metadata and the complete source without executing it. Review the source, choose whether to enable future controlled launches, then choose **Install and run** or **Update and run**.
 
 Each source is independent. A URL installed through the panel or MCP is remembered in `sources.json` beside `autoload.json`. A saved URL overrides the optional `@update-url` header. The bundled settings, usage, hide-invite, hide-Mini, and Windows updater scripts default to their canonical files on this repository's `master` branch. Other scripts need an explicit URL or `@update-url`. Version checks run on startup by default and never install automatically. Version comparison supports dotted numeric versions and prerelease ordering; equal versions and downgrades are not offered for installation, so authors must bump `@version` when changing source.
@@ -68,7 +70,7 @@ For example, ask: “Add the userscript at this URL, review it, run it now, and 
 
 ## Live development
 
-Develop a workspace userscript with automatic validation, atomic publishing, and renderer reload on every save:
+Develop a workspace userscript with metadata validation, atomic publishing, and script re-execution on every save:
 
 ```powershell
 claudex-yourself dev .\scripts\userscript_settings.js --autoload

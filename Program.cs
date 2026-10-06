@@ -191,6 +191,7 @@ internal static class Program
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var page = SelectCodexPage(await ReadTargetsAsync(client));
         if (page is null) return Fail("The DevTools endpoint is reachable, but no Codex page target is available.");
+        await RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(5));
         Console.WriteLine("Controlled Codex is ready.");
         Console.WriteLine($"Renderer: {page.Title}");
         Console.WriteLine($"User scripts: {UserScriptDirectory}");
@@ -331,20 +332,26 @@ internal static class Program
 
     private static int InstallShortcut()
     {
-        if (!OperatingSystem.IsWindows()) return Fail("install-shortcut is currently Windows-only; macOS can launch the published executable directly.");
+        if (!OperatingSystem.IsWindows()) return Fail("install-shortcut is currently Windows-only; macOS and Linux can launch the published executable directly.");
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
         var shortcutPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Codex (controlled).lnk");
-        var codexExecutable = FindCodexExecutable();
+        var package = FindCodexPackage();
+        var appId = $"{package.FamilyName}!App";
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "claudex.ico");
+        if (!File.Exists(iconPath)) throw new FileNotFoundException("Keep claudex.ico next to the published executable before installing the shortcut.", iconPath);
         var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("Windows shortcut support is unavailable.");
         dynamic shell = Activator.CreateInstance(shellType)!;
         dynamic shortcut = shell.CreateShortcut(shortcutPath);
         shortcut.TargetPath = executable;
         shortcut.Arguments = "launch";
         shortcut.WorkingDirectory = Path.GetDirectoryName(executable)!;
-        shortcut.IconLocation = $"{codexExecutable},0";
+        shortcut.IconLocation = $"{iconPath},0";
         shortcut.Description = "Launch Codex with the local development control endpoint";
         shortcut.Save();
+        WindowsShortcut.SetAppId(shortcutPath, appId);
         Console.WriteLine($"Created {shortcutPath}");
+        Console.WriteLine($"AppUserModelID: {appId}");
+        Console.WriteLine("Replace the old taskbar pin with this shortcut to group controlled Codex windows with the launcher.");
         return 0;
     }
 
@@ -533,7 +540,7 @@ internal static class Program
             return 0;
         }
         if (!OperatingSystem.IsWindows())
-            return Fail("Foreground activation supports Windows and macOS.");
+            return Fail("Foreground activation supports Windows, macOS, and Linux.");
 
         var package = FindCodexPackage();
         var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
@@ -542,13 +549,6 @@ internal static class Program
             "activate the running Codex application");
         Console.WriteLine("Activated the running Codex application.");
         return 0;
-    }
-
-    private static string FindCodexExecutable()
-    {
-        var package = FindCodexPackage();
-        var executable = Path.Combine(package.InstallLocation, "app", "ChatGPT.exe");
-        return File.Exists(executable) ? executable : throw new FileNotFoundException("The Codex desktop executable was not found.", executable);
     }
 
     private static CodexPackage FindCodexPackage()
