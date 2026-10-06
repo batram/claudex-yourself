@@ -35,6 +35,7 @@ internal static class Program
                 "mcp" => await ClaudexMcpServer.RunAsync(),
                 "reload-worker" => await ReloadWorkerAsync(),
                 "autoload-worker" => await AutoloadScripts.RunWorkerAsync(),
+                "mac-relaunch-watch" => await MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray()),
                 "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
                 "update-worker" => await CodexUpdates.RunWorkerAsync(),
                 "update-watch" => await CodexUpdates.WatchAsync(),
@@ -70,6 +71,7 @@ internal static class Program
             {
                 StartAutoloadWorker();
                 CodexUpdates.StartWatcher();
+                if (OperatingSystem.IsMacOS()) MacRelaunchWatcher.Start(MacCodexApp.Find());
             }
             return result;
         }
@@ -125,9 +127,9 @@ internal static class Program
         return 0;
     }
 
-    private static int LaunchMacOS()
+    internal static int LaunchMacOS(MacCodexApp? app = null)
     {
-        var app = MacCodexApp.Find();
+        app ??= MacCodexApp.Find();
         var start = new ProcessStartInfo(app.ExecutablePath) { UseShellExecute = false };
         // Pass Chromium switches at process creation, preserving the app's normal
         // build flavor, profile and native updater.
@@ -137,6 +139,7 @@ internal static class Program
         RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
         StartAutoloadWorker();
+        MacRelaunchWatcher.Start(app);
         return 0;
     }
 
@@ -183,6 +186,7 @@ internal static class Program
 
     private static async Task<int> StatusAsync()
     {
+        if (OperatingSystem.IsMacOS()) Console.WriteLine(await MacRelaunchWatcher.DescribeStatusAsync());
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var page = SelectCodexPage(await ReadTargetsAsync(client));
         if (page is null) return Fail("The DevTools endpoint is reachable, but no Codex page target is available.");
@@ -373,7 +377,7 @@ internal static class Program
         Process.Start(start)?.Dispose();
     }
 
-    private static void StartAutoloadWorker()
+    internal static void StartAutoloadWorker()
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
@@ -452,6 +456,7 @@ internal static class Program
             RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
             throw new InvalidOperationException("Userscript renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
+        MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();
         Console.WriteLine("Self-test passed.");

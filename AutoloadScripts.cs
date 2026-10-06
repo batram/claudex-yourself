@@ -41,7 +41,6 @@ internal static class AutoloadScripts
         {
             await WaitForRendererAsync(TimeSpan.FromSeconds(60));
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            var codexVersion = UserscriptMetadata.CurrentCodexVersion();
             while (true)
             {
                 JsonElement[] targets;
@@ -79,6 +78,9 @@ internal static class AutoloadScripts
                     if (token.Length == 0) continue;
                     if (!windows.TryGetValue(id, out var window) || window.Token != token)
                     { windows[id] = window = new WindowState(token, target.GetProperty("url").GetString()!); changed = true; }
+                    // The worker can survive an updater relaunch into a new app build.
+                    var codexVersion = names.Any(name => !window.Scripts.ContainsKey(name))
+                        ? UserscriptMetadata.CurrentCodexVersion() : null;
                     foreach (var disabled in window.Scripts.Keys.Where(name => !names.Contains(name)).ToArray())
                     { window.Scripts.Remove(disabled); changed = true; }
                     foreach (var name in names)
@@ -91,7 +93,7 @@ internal static class AutoloadScripts
                             var source = await File.ReadAllTextAsync(path);
                             var metadata = UserscriptMetadata.Parse(source);
                             if (!metadata.Id.Equals(name, StringComparison.OrdinalIgnoreCase)) throw new FormatException($"Userscript @id '{metadata.Id}' does not match filename '{name}'.");
-                            var compatibility = metadata.Compatibility(codexVersion);
+                            var compatibility = metadata.Compatibility(codexVersion!);
                             if (!compatibility.PlatformSupported) { window.Scripts[name] = new { name, state = "skipped", compatibility }; continue; }
                             var result = await Program.RunScriptAsync(source, name, socket);
                             window.Scripts[name] = new { name, state = "completed", compatibility, logs = result.Logs, result = result.Result };
