@@ -12,7 +12,7 @@ claudex-yourself autoload hide_pets_button on
 
 The per-user script directory is printed by `status` and `list`. `run-all` executes only that user directory, alphabetically; ordinary bundled scripts are not included in that command. The Windows Updates companion is loaded separately by the launcher.
 
-`autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and reads the enabled list again for new windows. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
+`autoload <name> on|off` controls whether a per-user script runs during controlled launches. The launcher starts a single detached watcher, waits up to 60 seconds for the renderer, and applies enabled scripts to the main window and each session opened with **Open in new window**. The watcher applies scripts once per document, including after a window reload, and rereads the enabled list on every poll, applying newly enabled scripts to existing windows too. Disabling autoload does not uninstall a controller already running in a window; use its in-app switch or reload the window. It excludes Mini overlays and embedded web content, and stops after the renderer endpoint has been unavailable for 15 seconds. `get_autoload_status` reports `watching` with results for each window, including failures and compatibility warnings. `list` marks enabled entries with `[autoload]`.
 
 Session-window autoload was also verified on macOS Apple Silicon with Codex build `13100`: opening a local chat through **Open in new window** installed all four enabled scripts (`sidebar_usage`, `hide_invite_a_friend`, `hide_pets_button`, and `userscript_settings`) in both the main and new session renderers. With a controlled renderer, an active autoload watcher, and a session window open, run `node tests/AutoloadWindowChecks.js` on Windows or macOS to check the enabled scripts against each window's live runtime. This verifies window autoload; it does not mark every script's individual feature set as tested on that Codex build.
 
@@ -20,17 +20,20 @@ Session-window autoload was also verified on macOS Apple Silicon with Codex buil
 
 `userscript_settings.js` adds a **User scripts** page to Codex Settings using only renderer JavaScript. It stores preferences in Codex `localStorage`; it does not read the filesystem or modify `autoload.json`.
 
-The settings page has a fixed catalog. To make a cataloged script's switch control a live controller, publish it and `userscript_settings.js` into the per-user script directory and leave both enabled for autoload. A selectable script still executes at renderer startup, but its controller installs only when its in-app preference is enabled. Switches apply immediately when the script's reversible `install()` and `uninstall()` controller is loaded; otherwise they save a preference for its next execution.
+The settings page combines a built-in catalog with additional controllers in the shared userscript registry, excluding the settings controller itself. To make a per-user script's switch control a live controller, publish it and `userscript_settings.js` into the per-user script directory and leave both enabled for autoload. A selectable script still executes at renderer startup, but its controller installs only when its in-app preference is enabled. Switches apply immediately when the script's reversible `install()` and `uninstall()` controller is loaded. Unloaded or unsupported scripts have disabled switches; their displayed state is based on the live controller rather than an assumed default. Preferences are saved after toggling an available controller.
 
-The settings userscript currently catalogs:
+The built-in catalog contains:
 
 - `sidebar_usage`
 - `hide_invite_a_friend`
 - `hide_pets_button`
+- `codex_updates` (Windows only; loaded by the companion worker)
+
+The `hide_pets_button` filename is retained for compatibility; its current visible label is **Hide Mini button**. Registered custom controllers appear in addition to these entries.
 
 ## Live development
 
-Develop a workspace userscript with automatic validation, atomic publishing, and renderer reload on every save:
+Develop a workspace userscript with metadata validation, atomic publishing, and script re-execution on every save:
 
 ```powershell
 claudex-yourself dev .\scripts\userscript_settings.js --autoload
