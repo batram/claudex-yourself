@@ -75,7 +75,8 @@ internal static class Program
         }
         if (OperatingSystem.IsWindows()) return LaunchWindows();
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
-        return Fail("Controlled launch currently supports Windows and macOS.");
+        if (OperatingSystem.IsLinux()) return LaunchLinux();
+        return Fail("Controlled launch supports Windows, macOS and Linux.");
     }
 
     private static int LaunchWindows()
@@ -133,6 +134,17 @@ internal static class Program
         start.ArgumentList.Add($"--remote-debugging-port={DevToolsPort}");
         start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Could not start Codex Desktop.");
+        RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
+        Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
+        StartAutoloadWorker();
+        return 0;
+    }
+
+    private static int LaunchLinux()
+    {
+        var app = LinuxCodexApp.Find();
+        using var process = Process.Start(app.StartInfo(DevToolsPort))
+            ?? throw new InvalidOperationException("Could not start Codex Desktop.");
         RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
         StartAutoloadWorker();
@@ -441,7 +453,7 @@ internal static class Program
             throw new InvalidOperationException("Userscript renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
-        if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS()) Console.WriteLine("Warning: controlled launch is unsupported on this OS.");
+        if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();
         Console.WriteLine("Self-test passed.");
         return 0;
     }
@@ -467,7 +479,7 @@ internal static class Program
         }
     }
 
-    private static bool IsCodexRunning() => new[] { "ChatGPT", "Codex" }.SelectMany(Process.GetProcessesByName).Any(process =>
+    private static bool IsCodexRunning() => new[] { "ChatGPT", "Codex", "codex-desktop" }.SelectMany(Process.GetProcessesByName).Any(process =>
     {
         try
         {
@@ -484,10 +496,19 @@ internal static class Program
     private static bool IsDesktopExecutablePath(string path) => OperatingSystem.IsWindows()
         ? path.EndsWith(Path.Combine("app", "ChatGPT.exe"), StringComparison.OrdinalIgnoreCase)
           && path.Contains("OpenAI.Codex_", StringComparison.OrdinalIgnoreCase)
-        : OperatingSystem.IsMacOS() && MacCodexApp.IsDesktopExecutable(path);
+        : OperatingSystem.IsMacOS() ? MacCodexApp.IsDesktopExecutable(path)
+        : OperatingSystem.IsLinux() && LinuxCodexApp.ReadExecutable(path) is not null;
 
     private static int ActivateRunningCodex()
     {
+        if (OperatingSystem.IsLinux())
+        {
+            // Electron's single-instance handling forwards this launch to the existing app.
+            using var process = Process.Start(LinuxCodexApp.Find().StartInfo(DevToolsPort))
+                ?? throw new InvalidOperationException("Could not activate Codex Desktop.");
+            Console.WriteLine("Requested activation of the running controlled Codex application.");
+            return 0;
+        }
         if (OperatingSystem.IsMacOS())
         {
             using var process = Process.Start(new ProcessStartInfo("/usr/bin/open")

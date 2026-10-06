@@ -1,10 +1,10 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.4.6
+// @version       1.4.8
 // @description   Shows all available Codex usage limits in the sidebar or compact rail.
 // @run-at        renderer-ready
-// @platform      windows, macos
+// @platform      windows, macos, linux
 // @codex-tested  26.803.10989.0
 // @codex-tested  26.903.9818.0
 // @codex-tested  26.908.9136.0
@@ -22,6 +22,11 @@ const scriptId = "sidebar_usage";
 const usageLink = '<a class="claudex-usage-link" href="codex://settings/usage" title="Open usage settings">Usage</a>';
 let observer;
 let refreshTimer;
+let retryTimer;
+let refreshRequest;
+let refreshPending = false;
+let refreshError = "";
+let retryAttempt = 0;
 let widget;
 let style;
 let apiClient;
@@ -58,10 +63,10 @@ const renderNavigationStatus = () => {
   if (!widget) return;
   const link = widget.querySelector(".claudex-usage-link");
   link?.setAttribute("aria-busy", String(navigationPending));
-  widget.querySelector(".claudex-usage-error")?.remove();
+  widget.querySelector(".claudex-usage-navigation-error")?.remove();
   if (navigationError) {
     const message = document.createElement("div");
-    message.className = "claudex-usage-error";
+    message.className = "claudex-usage-error claudex-usage-navigation-error";
     message.setAttribute("role", "alert");
     message.textContent = navigationError;
     (widget.querySelector(".claudex-usage-popover") ?? widget).appendChild(message);
@@ -150,8 +155,10 @@ const render = (data, stale = false) => {
   const remaining = data?.limits?.find(isLimitVisible)?.windows?.[0]?.remaining;
   const summary = Number.isFinite(remaining) ? `${remaining}% left` : "Usage limits";
   const toggle = `<button type="button" class="claudex-usage-toggle" aria-label="Show usage limits, ${escapeHtml(summary)}" aria-expanded="false" title="${escapeHtml(summary)}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1"/></svg>${Number.isFinite(remaining) ? `<span>${remaining}%</span>` : ""}</button>`;
+  const errorMessage = refreshError ? '<div class="claudex-usage-error" role="status">Could not refresh usage. Retrying automatically. <button type="button" class="claudex-usage-retry">Retry now</button></div>' : "";
   if (!data) {
-    widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden><div class="claudex-usage-heading">${usageLink}<span>Loading…</span></div></div>`;
+    widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden><div class="claudex-usage-heading">${usageLink}<span>${refreshError ? "Unavailable" : "Loading…"}</span></div>${errorMessage}</div>`;
+    if (wasOpen && compact) openPopover();
     renderNavigationStatus();
     return;
   }
@@ -168,7 +175,7 @@ const render = (data, stale = false) => {
   widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden>
     <div class="claudex-usage-heading">${usageLink}<span>${escapeHtml(plan)}${stale ? " &middot; cached" : ""}</span></div>
     ${rows || '<div class="claudex-usage-empty">No usage limits selected.</div>'}
-    ${data.credits != null ? `<div class="claudex-usage-credits"><span>Credits</span><strong>${escapeHtml(data.credits)}</strong></div>` : ""}</div>`;
+    ${data.credits != null ? `<div class="claudex-usage-credits"><span>Credits</span><strong>${escapeHtml(data.credits)}</strong></div>` : ""}${errorMessage}</div>`;
   if (wasOpen && compact) openPopover();
   renderNavigationStatus();
 };
@@ -200,6 +207,11 @@ const ensureWidget = () => {
     widget.className = "claudex-sidebar-usage";
     widget.setAttribute("aria-label", "Usage remaining");
     widget.addEventListener("click", async event => {
+      if (event.target.closest(".claudex-usage-retry")) {
+        event.preventDefault();
+        await refresh();
+        return;
+      }
       const toggle = event.target.closest(".claudex-usage-toggle");
       if (toggle) {
         event.preventDefault();
@@ -258,20 +270,55 @@ const queueMount = () => {
   });
 };
 const refresh = async () => {
+  if (refreshPending) return;
+  refreshPending = true;
+  clearTimeout(retryTimer);
+  const generation = mountGeneration;
+  const request = new AbortController();
+  refreshRequest = request;
+  let timeout;
   try {
-    const client = await getApiClient();
-    const data = normalizeUsage(await client.safeGet("/wham/usage"));
+    const response = await Promise.race([
+      (async () => {
+        const client = await getApiClient();
+        if (request.signal.aborted) throw new Error("Usage request cancelled.");
+        return client.safeGet("/wham/usage", { signal:request.signal });
+      })(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error("Usage request timed out after 15 seconds."));
+          request.abort();
+        }, 15000);
+      })
+    ]);
+    if (generation !== mountGeneration) return;
+    const data = normalizeUsage(response);
     localStorage.setItem(cacheKey, JSON.stringify(data));
+    refreshError = "";
+    retryAttempt = 0;
     render(data);
     notifyLimits();
   } catch (error) {
+    if (generation !== mountGeneration) return;
+    apiClient = undefined;
+    refreshError = String(error);
     render(readCache(), true);
     console.warn("Sidebar usage refresh failed", error);
+    retryTimer = setTimeout(refresh, Math.min(60000, 5000 * 2 ** Math.min(retryAttempt++, 4)));
+  } finally {
+    clearTimeout(timeout);
+    if (generation === mountGeneration) {
+      refreshPending = false;
+      refreshRequest = undefined;
+    }
   }
 };
 const install = () => {
   observer?.disconnect();
   mountGeneration++;
+  refreshRequest?.abort();
+  refreshPending = false;
+  clearTimeout(retryTimer);
   mountQueued = false;
   document.removeEventListener("pointerdown", dismissPopover, true);
   clearInterval(refreshTimer);
@@ -327,6 +374,11 @@ const install = () => {
 const uninstall = () => {
   observer?.disconnect();
   mountGeneration++;
+  refreshRequest?.abort();
+  refreshRequest = undefined;
+  refreshPending = false;
+  clearTimeout(retryTimer);
+  retryTimer = undefined;
   mountQueued = false;
   document.removeEventListener("pointerdown", dismissPopover, true);
   observer = undefined;

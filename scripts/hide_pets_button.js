@@ -1,10 +1,10 @@
 // ==ClaudexUserScript==
 // @name          Hide pets button
 // @id            hide_pets_button
-// @version       1.2.0
+// @version       1.2.1
 // @description   Hides the Show Mini / Hide Mini account-menu entry.
 // @run-at        renderer-ready
-// @platform      windows, macos
+// @platform      windows, macos, linux
 // @codex-tested  26.803.10989.0
 // @codex-tested  26.901.5280.0
 // @grant         none

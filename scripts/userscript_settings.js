@@ -1,10 +1,10 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.2.3
+// @version       1.2.6
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
-// @platform      windows, macos
+// @platform      windows, macos, linux
 // @codex-tested  26.803.10989.0
 // @codex-tested  26.903.9818.0
 // @codex-tested  26.908.9136.0
@@ -20,20 +20,36 @@ const catalog = [
   { id: "sidebar_usage", name: "Sidebar usage", description: "Shows available usage limits in the sidebar rail." },
   { id: "hide_invite_a_friend", name: "Hide Invite a friend", description: "Hides the Invite a friend account-menu entry." },
   { id: "hide_pets_button", name: "Hide Mini button", description: "Hides the Show Mini / Hide Mini account-menu entry." },
-  { id: "codex_updates", name: "Codex updates", description: "Shows the controlled Codex update companion." }
+  { id: "codex_updates", name: "Codex updates", description: "Checks and installs stable Windows Codex packages.", platforms:["windows"] }
 ];
 const registry = window[registryKey] ??= new Map();
 const readPreferences = () => {
   try { return JSON.parse(localStorage.getItem(preferencesKey) || "{}"); }
   catch { return {}; }
 };
-const isEnabled = id => readPreferences()[id] !== false;
+const platformName = navigator.userAgentData?.platform || navigator.platform || "";
+const platform = /win/i.test(platformName) ? "windows" : /mac/i.test(platformName) ? "macos" : /linux/i.test(platformName) ? "linux" : "unknown";
+const getCatalog = () => [...catalog, ...[...registry.keys()].filter(id =>
+  id !== "userscript_settings" && !catalog.some(script => script.id === id)
+).map(id => ({ id, name:registry.get(id)?.name || id, description:"Registered userscript." }))];
+const scriptState = script => {
+  const supported = !script.platforms || script.platforms.includes(platform);
+  const controller = registry.get(script.id);
+  const available = supported && typeof controller?.install === "function" && typeof controller?.uninstall === "function";
+  return { available, enabled:available && controller.installed === true,
+    status:!supported ? "Windows only — unavailable on this platform." : !available ? "Not loaded in this window." : controller.installed === true ? "Enabled" : "Disabled" };
+};
+const isEnabled = id => scriptState(getCatalog().find(script => script.id === id) || {id}).enabled;
 const setEnabled = (id, enabled) => {
-  const preferences = readPreferences();
-  preferences[id] = enabled;
-  localStorage.setItem(preferencesKey, JSON.stringify(preferences));
+  const script = getCatalog().find(script => script.id === id);
+  if (!script || !scriptState(script).available) return;
   const controller = registry.get(id);
-  if (controller) (enabled ? controller.install : controller.uninstall)();
+  (enabled ? controller.install : controller.uninstall)();
+  const preferences = readPreferences();
+  preferences[id] = controller.installed === true;
+  localStorage.setItem(preferencesKey, JSON.stringify(preferences));
+  renderScriptOptions();
+  renderUsageOptions();
 };
 
 const style = document.createElement("style");
@@ -64,6 +80,7 @@ style.textContent = `
   .claudex-userscript-switch span { position:absolute; inset:0; cursor:pointer; border-radius:20px; background:#666; transition:.15s; }
   .claudex-userscript-switch span:before { content:""; position:absolute; width:16px; height:16px; left:2px; top:2px;
     border-radius:50%; background:white; transition:.15s; }
+  .claudex-userscript-switch input:disabled + span { opacity:.35; cursor:not-allowed; }
   .claudex-userscript-switch input:checked + span { background:#4f7cff; }
   .claudex-userscript-switch input:checked + span:before { transform:translateX(16px); }
 `;
@@ -75,6 +92,42 @@ let activeButton;
 let activeNav;
 let nativeSelections = [];
 let usageOptions;
+let scriptOptions;
+const renderScriptOptions = () => {
+  if (!scriptOptions) return;
+  for (const script of getCatalog()) {
+    let row = [...scriptOptions.children].find(element => element.dataset.scriptId === script.id);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "claudex-userscript-row";
+      row.dataset.scriptId = script.id;
+      const copy = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "claudex-userscript-name";
+      name.textContent = script.name;
+      const description = document.createElement("div");
+      description.className = "claudex-userscript-description";
+      copy.append(name, description);
+      const label = document.createElement("label");
+      label.className = "claudex-userscript-switch";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("aria-label", `Enable ${script.name}`);
+      input.addEventListener("change", () => setEnabled(script.id, input.checked));
+      label.append(input, document.createElement("span"));
+      row.append(copy, label);
+      scriptOptions.appendChild(row);
+    }
+    const state = scriptState(script);
+    const description = row.querySelector(".claudex-userscript-description");
+    const text = `${script.description} ${state.status}`;
+    if (description.textContent !== text) description.textContent = text;
+    const input = row.querySelector("input");
+    input.checked = state.enabled;
+    input.disabled = !state.available;
+  }
+};
+const refreshOptions = () => { renderScriptOptions(); renderUsageOptions(); };
 const renderUsageOptions = () => {
   if (!usageOptions) return;
   const controller = registry.get("sidebar_usage");
@@ -104,16 +157,19 @@ const renderUsageOptions = () => {
     const input = row.querySelector("input");
     input.setAttribute("aria-label", `Show ${limit.name} usage`);
     input.checked = limit.visible;
+    input.disabled = controller?.installed !== true;
   }
   for (const row of existing.values()) row.remove();
   const empty = usageOptions.querySelector(".claudex-usage-options-empty");
-  empty.hidden = limits.length > 0;
-  empty.textContent = controller ? "No usage limits available yet. They will appear after usage loads." : "Load the Sidebar usage script to choose which limits to display.";
+  empty.hidden = limits.length > 0 && controller?.installed === true;
+  empty.textContent = controller?.installed === false ? "Enable Sidebar usage to change which limits are displayed." : controller ? "No usage limits available yet. They will appear after usage loads." : "Load the Sidebar usage script to choose which limits to display.";
 };
 window.addEventListener("claudex-usage-limits-changed", renderUsageOptions);
-window.addEventListener("claudex-userscript-registered", renderUsageOptions);
+window.addEventListener("claudex-userscript-registered", refreshOptions);
+window.addEventListener("storage", refreshOptions);
 const closePanel = () => {
   usageOptions = undefined;
+  scriptOptions = undefined;
   activePanel?.remove();
   activePanel = undefined;
   for (const entry of hiddenNativeContent) {
@@ -159,35 +215,15 @@ const openPanel = (settingsNav, button) => {
   activePanel.className = "claudex-userscript-panel";
   const header = document.createElement("header");
   const heading = document.createElement("h1");
-  heading.textContent = "User scripts";
+  heading.textContent = "Claudex - User scripts";
   const intro = document.createElement("p");
   intro.textContent = "Choose which reversible userscripts are active in Codex.";
   header.append(heading, intro);
   const list = document.createElement("div");
   list.className = "claudex-userscript-list";
   activePanel.append(header, list);
-  for (const script of catalog) {
-    const row = document.createElement("div");
-    row.className = "claudex-userscript-row";
-    const copy = document.createElement("div");
-    const name = document.createElement("div");
-    name.className = "claudex-userscript-name";
-    name.textContent = script.name;
-    const description = document.createElement("div");
-    description.className = "claudex-userscript-description";
-    description.textContent = script.description;
-    copy.append(name, description);
-    const label = document.createElement("label");
-    label.className = "claudex-userscript-switch";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.checked = isEnabled(script.id);
-    input.setAttribute("aria-label", `Enable ${script.name}`);
-    input.addEventListener("change", () => setEnabled(script.id, input.checked));
-    label.append(input, document.createElement("span"));
-    row.append(copy, label);
-    list.appendChild(row);
-  }
+  scriptOptions = list;
+  renderScriptOptions();
   scroller.appendChild(activePanel);
   usageOptions = document.createElement("section");
   usageOptions.className = "claudex-usage-options";
@@ -240,11 +276,38 @@ const installInto = settingsNav => {
     element.classList.remove("text-token-list-active-selection-icon-foreground");
   }
   button.classList.add("claudex-userscript-nav");
-  button.setAttribute("aria-label", "User scripts settings");
+  button.setAttribute("aria-label", "Claudex - User scripts");
   const label = [...button.querySelectorAll("span")].find(span => span.textContent?.trim() === "Appearance")
     ?? button.querySelector(".text-fade-truncate") ?? button.querySelector("span:last-child");
-  if (label) label.textContent = "User scripts";
-  else button.textContent = "User scripts";
+  if (label) label.textContent = "Claudex - User scripts";
+  else button.textContent = "Claudex - User scripts";
+  // A script sheet with code brackets, drawn for this entry in the native line style.
+  const inheritedIcons = [...button.querySelectorAll("svg")];
+  const inheritedIcon = inheritedIcons[0];
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "16");
+  icon.setAttribute("height", "16");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "1.5");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("focusable", "false");
+  icon.setAttribute("class", inheritedIcon?.getAttribute("class") || "shrink-0");
+  icon.dataset.claudexUserscriptIcon = "true";
+  icon.innerHTML = '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z"/><path d="M14 3v6h6M9 12l-2 3 2 3m6-6 2 3-2 3"/>';
+  // Native rows carry separate compact and leading icons; replace both variants.
+  if (inheritedIcons.length) {
+    for (const original of inheritedIcons) {
+      const replacement = icon.cloneNode(true);
+      replacement.setAttribute("width", original.getAttribute("width") || "16");
+      replacement.setAttribute("height", original.getAttribute("height") || "16");
+      replacement.setAttribute("class", original.getAttribute("class") || "shrink-0");
+      original.replaceWith(replacement);
+    }
+  } else button.prepend(icon);
   button.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); openPanel(settingsNav, button); });
   }
   // The new settings rows are wrapped by a tooltip. Put our row beside the
@@ -252,7 +315,7 @@ const installInto = settingsNav => {
   if (!query && anchor) {
     if (button.previousElementSibling !== anchor) anchor.after(button);
   } else if (button.parentElement !== target) target.appendChild(button);
-  const searchText = "user scripts userscripts sidebar usage limits " + catalog.map(item => item.name).join(" ") + " " + (registry.get("sidebar_usage")?.getAvailableLimits?.() || []).map(item => item.name).join(" ");
+  const searchText = "claudex user scripts userscripts sidebar usage limits " + catalog.map(item => item.name).join(" ") + " " + (registry.get("sidebar_usage")?.getAvailableLimits?.() || []).map(item => item.name).join(" ");
   button.hidden = Boolean(query) && !query.split(/\s+/).every(word => searchText.toLowerCase().includes(word));
   if (activePanel?.isConnected && activeNav === settingsNav) {
     for (const item of settingsNav.querySelectorAll("button[aria-current='page']:not(.claudex-userscript-nav)")) {
@@ -311,14 +374,15 @@ const uninstall = () => {
   }
   navBindings.clear();
   window.removeEventListener("claudex-usage-limits-changed", renderUsageOptions);
-  window.removeEventListener("claudex-userscript-registered", renderUsageOptions);
+  window.removeEventListener("claudex-userscript-registered", refreshOptions);
+  window.removeEventListener("storage", refreshOptions);
   window.removeEventListener("claudex-close-userscript-settings", closePanel);
   closePanel();
   style.remove();
   document.querySelectorAll("[data-claudex-userscript-settings='true']").forEach(settingsNav => {
-    settingsNav.querySelector("[aria-label='User scripts settings']")?.remove();
+    settingsNav.querySelector(".claudex-userscript-nav")?.remove();
     delete settingsNav.dataset.claudexUserscriptSettings;
   });
 };
 window[stateKey] = { observer, uninstall, openPanel, setEnabled };
-return { installed:true, scripts:catalog.map(script => ({ ...script, enabled:isEnabled(script.id) })) };
+return { installed:true, scripts:getCatalog().map(script => ({ ...script, ...scriptState(script) })) };

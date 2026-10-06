@@ -32,7 +32,9 @@ async function main() {
   assert(pages.some(target => new URL(target.url).searchParams.has('initialRoute')), 'Open a session window before running this check');
   const applicationData = process.platform === 'darwin'
     ? path.join(os.homedir(), 'Library', 'Application Support')
-    : process.env.APPDATA;
+    : process.platform === 'linux'
+      ? (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'))
+      : process.env.APPDATA;
   assert(applicationData, 'Application data directory is available');
   const stateDirectory = path.join(applicationData, 'claudex-yourself');
   const enabled = JSON.parse(fs.readFileSync(path.join(stateDirectory, 'autoload.json'), 'utf8'));

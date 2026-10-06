@@ -1,10 +1,10 @@
 // ==ClaudexUserScript==
 // @name          Hide Invite a friend
 // @id            hide_invite_a_friend
-// @version       1.1.0
+// @version       1.1.1
 // @description   Hides the Invite a friend account-menu entry.
 // @run-at        renderer-ready
-// @platform      windows, macos
+// @platform      windows, macos, linux
 // @codex-tested  26.803.10989.0
 // @grant         none
 // @codex-tested  26.924.2738.0

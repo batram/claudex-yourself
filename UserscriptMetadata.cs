@@ -68,7 +68,7 @@ internal sealed record UserscriptMetadata(
 
     public CompatibilityResult Compatibility(string currentCodexVersion)
     {
-        var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : "unsupported";
+        var platform = OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsMacOS() ? "macos" : OperatingSystem.IsLinux() ? "linux" : "unsupported";
         var platformSupported = Platforms.Contains(platform, StringComparer.OrdinalIgnoreCase);
         var tested = TestedCodexVersions.Contains(currentCodexVersion, StringComparer.OrdinalIgnoreCase);
         var status = !platformSupported ? "unsupported_platform" : tested ? "tested" : "untested_current_version";
@@ -104,7 +104,8 @@ internal sealed record UserscriptMetadata(
         {
             return MacCodexApp.Find().Version;
         }
-        throw new PlatformNotSupportedException("Codex Desktop version detection supports Windows and macOS.");
+        if (OperatingSystem.IsLinux()) return LinuxCodexApp.Find().Version;
+        throw new PlatformNotSupportedException("Codex Desktop version detection supports Windows, macOS and Linux.");
     }
 
     internal sealed record CompatibilityResult(string Status, string CurrentCodexVersion, bool Tested, bool PlatformSupported);

@@ -5,9 +5,15 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 runtime=${1:-}
 explicit_runtime=$runtime
 if [ -z "$runtime" ]; then
+  case "$(uname -s)" in
+    Darwin) platform=osx ;;
+    Linux) platform=linux ;;
+    *) printf '%s\n' 'Unsupported host OS; specify a runtime explicitly.' >&2; exit 1 ;;
+  esac
   case "$(uname -m)" in
-    arm64|aarch64) runtime=osx-arm64 ;;
-    *) runtime=osx-x64 ;;
+    arm64|aarch64) runtime=$platform-arm64 ;;
+    x86_64|amd64) runtime=$platform-x64 ;;
+    *) printf '%s\n' 'Unsupported host architecture; specify a runtime explicitly.' >&2; exit 1 ;;
   esac
 fi
 
