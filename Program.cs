@@ -35,6 +35,7 @@ internal static class Program
                 "mcp" => await ClaudexMcpServer.RunAsync(),
                 "reload-worker" => await ReloadWorkerAsync(),
                 "autoload-worker" => await AutoloadScripts.RunWorkerAsync(),
+                "sources-watch" => await SourceUpdateWatcher.RunAsync(),
                 "mac-relaunch-watch" => await MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray()),
                 "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
                 "update-worker" => await CodexUpdates.RunWorkerAsync(),
@@ -276,6 +277,7 @@ internal static class Program
 
     internal static async Task<ScriptResult> RunScriptAsync(string source, string scriptName, string? webSocketDebuggerUrl = null)
     {
+        if (scriptName == "userscript_settings") SourceUpdateWatcher.Start();
         var sourceLiteral = JsonSerializer.Serialize(source);
         var nameLiteral = JsonSerializer.Serialize(scriptName);
         var expression = $$"""
@@ -316,6 +318,7 @@ internal static class Program
               });
               const execute = new Function('claudex', '"use strict"; return (async () => {\n' + {{sourceLiteral}} + '\n})();');
               const result = await execute(claudex);
+              (window[Symbol.for('claudex-yourself.executed-scripts')] ??= Object.create(null))[{{nameLiteral}}] = {{JsonSerializer.Serialize(ScriptSources.Hash(source))}};
               return JSON.stringify({ logs, result: result === undefined ? null : result });
             })()
             """;
@@ -379,6 +382,7 @@ internal static class Program
 
     internal static void StartAutoloadWorker()
     {
+        SourceUpdateWatcher.Start();
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
         var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
         start.ArgumentList.Add("autoload-worker");
@@ -455,6 +459,8 @@ internal static class Program
             RendererDevTools.IsUserscriptPage("https://example.com/detached-window.html") ||
             RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
             throw new InvalidOperationException("Userscript renderer identification failed.");
+        ScriptSourceChecks.RunAsync().GetAwaiter().GetResult();
+        SourceScheduleChecks.RunAsync().GetAwaiter().GetResult();
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();

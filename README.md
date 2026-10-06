@@ -182,3 +182,7 @@ The DevTools endpoint is checked on both IPv4 and IPv6 loopback. On Windows, Chr
 ## Development
 
 See [AGENTS.md](AGENTS.md) for the repository map, build and validation commands, and coding-agent instructions.
+
+## Claudex and userscript sources
+
+**Settings → Claudex - User scripts** checks Claudex releases and groups each script’s switches, settings, installed version, and update controls in one card. Add custom scripts by GitHub file link or HTTP(S) URL, review their source, then install/update and choose autoload. An agent can use `preview_userscript_url` and `install_userscript_url` for the same flow. Source URLs persist for future checks. Checks run on startup by default, with configurable intervals and per-script overrides; no updates install automatically. Claudex's global check opens a release link rather than replacing the running controller. See [URL sources and agent installation](docs/userscripts.md#in-app-switches) for the manifest format and trust model.
