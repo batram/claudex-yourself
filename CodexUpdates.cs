@@ -537,7 +537,7 @@ internal static class CodexUpdates
         throw new TimeoutException("Codex did not fully exit. The quit confirmation may have been cancelled, or a package process is still running. No update was installed.");
     }
 
-    private static Task WaitForExitAsync(string family, TimeSpan timeout) => WaitForQuietAsync(
+    internal static Task WaitForExitAsync(string family, TimeSpan timeout) => WaitForQuietAsync(
         () => PackageIsRunning(family), timeout, TimeSpan.FromSeconds(2), TimeSpan.FromMilliseconds(250));
 
     private static bool PackageIsRunning(string family)

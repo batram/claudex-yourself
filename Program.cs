@@ -27,6 +27,12 @@ internal static class Program
                     ? Launch()
                     : Fail("launch does not accept options."),
                 "package-debugger" => PackageDebugger(arguments.Skip(1).ToArray()),
+                "launch-vanilla" => arguments.Length == 1
+                    ? await LaunchVanillaAsync()
+                    : Fail("launch-vanilla does not accept options."),
+                "taskbar" => arguments.Length == 2 && arguments[1] == "vanilla"
+                    ? await LaunchVanillaAsync()
+                    : Fail("taskbar requires vanilla."),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
                 "run-all" => await RunAllAsync(),
@@ -54,6 +60,8 @@ internal static class Program
         catch (Exception exception)
         {
             Console.Error.WriteLine($"claudex-yourself: {exception.Message}");
+            if (OperatingSystem.IsWindows() && arguments.FirstOrDefault() == "taskbar")
+                WindowsJumpList.ShowError(exception.Message);
             return 1;
         }
     }
@@ -123,6 +131,49 @@ internal static class Program
         StartAutoloadWorker();
         CodexUpdates.StartWatcher();
         return 0;
+    }
+
+    private static async Task<int> LaunchVanillaAsync()
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Vanilla taskbar launch currently supports Windows only.");
+        var package = FindCodexPackage();
+        var controlledRunning = IsWindowsControlledCodexRunning();
+        await VanillaLaunch.RunAsync(controlledRunning, async () =>
+        {
+            await RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(5));
+            await RendererDevTools.EvaluateStringAsync("(() => { if(typeof window.electronBridge?.sendMessageFromView !== 'function') throw Error('Codex quit bridge unavailable'); setTimeout(() => window.electronBridge.sendMessageFromView({type:'quit-app'}), 250); return JSON.stringify({requested:true}); })()", TimeSpan.FromSeconds(3));
+        }, async () =>
+        {
+            try { await CodexUpdates.WaitForExitAsync(package.FamilyName, TimeSpan.FromSeconds(60)); }
+            catch (TimeoutException exception)
+            {
+                throw new TimeoutException("Codex did not fully exit. Quit may have been cancelled, or a package process is still running. Vanilla restart was cancelled.", exception);
+            }
+        }, () =>
+        {
+            var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+            ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _), "activate vanilla Codex");
+        });
+        Console.WriteLine(controlledRunning ? "Restarted Codex in vanilla mode." : "Launched or activated vanilla Codex.");
+        return 0;
+    }
+
+    private static bool IsWindowsControlledCodexRunning()
+    {
+        // An activation cannot remove Chromium switches from an existing process.
+        // Check its command line even when its renderer is not reachable.
+        const string script = "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter \"Name = 'ChatGPT.exe'\" | Where-Object { $_.ExecutablePath -like '*\\OpenAI.Codex_*\\app\\ChatGPT.exe' -and $_.CommandLine -notmatch '--type=' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace($_.CommandLine)) { throw 'Could not read the Codex process command line.' }; $_.CommandLine }";
+        var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-NonInteractive");
+        start.ArgumentList.Add("-EncodedCommand");
+        start.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
+        using var query = Process.Start(start) ?? throw new InvalidOperationException("Could not inspect Codex's launch mode.");
+        var output = query.StandardOutput.ReadToEnd();
+        var error = query.StandardError.ReadToEnd();
+        query.WaitForExit();
+        if (query.ExitCode != 0) throw new InvalidOperationException($"Could not inspect Codex's launch mode: {error.Trim()}");
+        return output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Any(VanillaLaunch.HasDebuggingArguments);
     }
 
     private static int LaunchMacOS()
@@ -342,8 +393,10 @@ internal static class Program
         shortcut.Description = "Launch Codex with the local development control endpoint";
         shortcut.Save();
         WindowsShortcut.SetAppId(shortcutPath, appId);
+        WindowsJumpList.Install(appId, executable, iconPath);
         Console.WriteLine($"Created {shortcutPath}");
         Console.WriteLine($"AppUserModelID: {appId}");
+        Console.WriteLine("Installed taskbar task: Launch or restart vanilla Codex.");
         Console.WriteLine("Replace the old taskbar pin with this shortcut to group controlled Codex windows with the launcher.");
         return 0;
     }
@@ -459,6 +512,7 @@ internal static class Program
             RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
             throw new InvalidOperationException("Userscript renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
+        VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();
         Console.WriteLine("Self-test passed.");
@@ -559,6 +613,7 @@ internal static class Program
     private static int Help()
     {
         Console.WriteLine("claudex-yourself launch");
+        Console.WriteLine("claudex-yourself launch-vanilla (Windows; gracefully restarts a controlled session)");
         Console.WriteLine("claudex-yourself status");
         Console.WriteLine("claudex-yourself update check|prepare|status|install");
         Console.WriteLine("claudex-yourself list");

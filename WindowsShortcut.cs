@@ -11,18 +11,27 @@ internal static class WindowsShortcut
     {
         var iid = typeof(IPropertyStore).GUID;
         Marshal.ThrowExceptionForHR(SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, 2, ref iid, out var store));
-        var key = new PropertyKey { Format = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), Id = 5 };
-        var value = new PropVariant { Type = 31, Pointer = Marshal.StringToCoTaskMemUni(appId) }; // VT_LPWSTR
+        try
+        {
+            SetStringProperty(store, new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5, appId);
+        }
+        finally
+        {
+            Marshal.FinalReleaseComObject(store);
+        }
+    }
+
+    internal static void SetStringProperty(object target, Guid format, uint id, string text)
+    {
+        var store = (IPropertyStore)target;
+        var key = new PropertyKey { Format = format, Id = id };
+        var value = new PropVariant { Type = 31, Pointer = Marshal.StringToCoTaskMemUni(text) }; // VT_LPWSTR
         try
         {
             Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref value));
             Marshal.ThrowExceptionForHR(store.Commit());
         }
-        finally
-        {
-            Marshal.FreeCoTaskMem(value.Pointer);
-            Marshal.FinalReleaseComObject(store);
-        }
+        finally { Marshal.FreeCoTaskMem(value.Pointer); }
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]

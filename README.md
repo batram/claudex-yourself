@@ -95,6 +95,10 @@ On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (con
 
 The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
 
+The Windows shortcut installer also adds **Launch or restart vanilla Codex** to the taskbar's **Tasks** section. This starts the normal packaged app without DevTools or Claudex startup scripts. If controlled Codex is running, it requests normal quit and waits for its package processes to exit before relaunching; cancelling quit aborts the switch. An existing vanilla session is activated without closing it. The CLI equivalent is `claudex-yourself launch-vanilla`. To return to controlled mode, quit vanilla Codex completely and use the controlled shortcut. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.
+
+The task list belongs to Codex's shared AppUserModelID and therefore appears on a normal Codex pin too. The installer preserves the automatic Recent category when Windows history is enabled. Re-run `install-shortcut` after moving the published executable to update the task target as well as the desktop shortcut.
+
 ### 3. Try a userscript
 
 ```powershell

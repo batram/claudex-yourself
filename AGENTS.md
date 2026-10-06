@@ -9,7 +9,7 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 ## Repository map
 
 - `Program.cs`, `RendererDevTools.cs`, and `ClaudexMcpServer.cs`: CLI, renderer control, and MCP entry points.
-- `WindowsShortcut.cs`, `MacCodexApp.cs`, and `LinuxCodexApp.cs`: Windows shortcut identity and platform-specific desktop discovery.
+- `WindowsShortcut.cs`, `WindowsJumpList.cs`, `VanillaLaunch.cs`, `MacCodexApp.cs`, and `LinuxCodexApp.cs`: Windows shortcut identity, taskbar tasks, vanilla restart sequencing, and platform-specific desktop discovery.
 - `UserscriptMetadata.cs`, `UserscriptDevelopment.cs`, and `AutoloadScripts.cs`: userscript metadata, publishing, execution, and autoload behavior.
 - `scripts/*.js`: bundled userscript sources. These are the canonical repository copies.
 - `CodexUpdates.cs`, `update/WindowsPackage.ps1`: Windows update discovery, validation, and deployment.
