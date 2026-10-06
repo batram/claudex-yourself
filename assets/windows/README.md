@@ -16,3 +16,10 @@ the tile moved):
 ```sh
 magick assets/macos/claudex.png -crop 1011x1011+121+121 +repage -background none -gravity center -extent 1031x1031 -filter Lanczos -define icon:auto-resize=256,128,64,48,40,32,24,20,16 assets/windows/claudex.ico
 ```
+
+The controlled Windows shortcut uses this icon plus the installed Codex package's
+AppUserModelID. Recreate and repin the shortcut after moving the published
+executable; see [launch and shortcut setup](../../README.md#2-launch-codex).
+Changing the icon is separate from updating the Claudex controller, userscript
+source, or Codex package; those workflows are described under
+[settings and updates](../../README.md#settings-and-updates).
