@@ -43,10 +43,12 @@ internal static class Program
                 "list" => ListScripts(),
                 "mcp" => await ClaudexMcpServer.RunAsync(),
                 "reload-worker" => await ReloadWorkerAsync(),
-                "autoload-worker" => await AutoloadScripts.RunWorkerAsync(),
+                "autoload-worker" => await BackgroundWorker.RunAsync("autoload-worker", AutoloadScripts.RunWorkerAsync),
+                "sources-watch" => await BackgroundWorker.RunAsync("sources-watch", SourceUpdateWatcher.RunAsync),
+                "mac-relaunch-watch" => await BackgroundWorker.RunAsync("mac-relaunch-watch", () => MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray())),
                 "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
                 "update-worker" => await CodexUpdates.RunWorkerAsync(),
-                "update-watch" => await CodexUpdates.WatchAsync(),
+                "update-watch" => await BackgroundWorker.RunAsync("update-watch", CodexUpdates.WatchAsync),
                 "autoload" => arguments.Length == 3
                     ? SetAutoload(arguments[1], arguments[2])
                     : Fail("autoload requires: <script-name> on|off"),
@@ -86,6 +88,7 @@ internal static class Program
             {
                 StartAutoloadWorker();
                 CodexUpdates.StartWatcher();
+                if (OperatingSystem.IsMacOS()) MacRelaunchWatcher.Start(MacCodexApp.Find());
             }
             return result;
         }
@@ -218,9 +221,9 @@ internal static class Program
         return 0;
     }
 
-    private static int LaunchMacOS()
+    internal static int LaunchMacOS(MacCodexApp? app = null)
     {
-        var app = MacCodexApp.Find();
+        app ??= MacCodexApp.Find();
         var start = new ProcessStartInfo(app.ExecutablePath) { UseShellExecute = false };
         // Pass Chromium switches at process creation, preserving the app's normal
         // build flavor, profile and native updater.
@@ -230,6 +233,7 @@ internal static class Program
         RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(45)).GetAwaiter().GetResult();
         Console.WriteLine($"Started controlled Codex (PID {process.Id}).");
         StartAutoloadWorker();
+        MacRelaunchWatcher.Start(app);
         return 0;
     }
 
@@ -276,6 +280,7 @@ internal static class Program
 
     private static async Task<int> StatusAsync()
     {
+        if (OperatingSystem.IsMacOS()) Console.WriteLine(await MacRelaunchWatcher.DescribeStatusAsync());
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var page = SelectCodexPage(await ReadTargetsAsync(client));
         if (page is null) return Fail("The DevTools endpoint is reachable, but no Codex page target is available.");
@@ -366,6 +371,7 @@ internal static class Program
 
     internal static async Task<ScriptResult> RunScriptAsync(string source, string scriptName, string? webSocketDebuggerUrl = null)
     {
+        if (scriptName == "userscript_settings") SourceUpdateWatcher.Start();
         var sourceLiteral = JsonSerializer.Serialize(source);
         var nameLiteral = JsonSerializer.Serialize(scriptName);
         var expression = $$"""
@@ -406,6 +412,7 @@ internal static class Program
               });
               const execute = new Function('claudex', '"use strict"; return (async () => {\n' + {{sourceLiteral}} + '\n})();');
               const result = await execute(claudex);
+              (window[Symbol.for('claudex-yourself.executed-scripts')] ??= Object.create(null))[{{nameLiteral}}] = {{JsonSerializer.Serialize(ScriptSources.Hash(source))}};
               return JSON.stringify({ logs, result: result === undefined ? null : result });
             })()
             """;
@@ -475,14 +482,10 @@ internal static class Program
         Process.Start(start)?.Dispose();
     }
 
-    private static void StartAutoloadWorker()
+    internal static void StartAutoloadWorker()
     {
-        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
-        // Worker results are persisted in autoload-status.json. Do not inherit a caller's
-        // captured output pipe: it would remain open for the worker's entire lifetime.
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.ArgumentList.Add("autoload-worker");
-        Process.Start(start)?.Dispose();
+        SourceUpdateWatcher.Start();
+        BackgroundWorker.Start("autoload-worker").Dispose();
     }
 
     private static int SetAutoload(string name, string value)
@@ -555,9 +558,12 @@ internal static class Program
             RendererDevTools.IsUserscriptPage("https://example.com/detached-window.html") ||
             RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
             throw new InvalidOperationException("Userscript renderer identification failed.");
+        ScriptSourceChecks.RunAsync().GetAwaiter().GetResult();
+        SourceScheduleChecks.RunAsync().GetAwaiter().GetResult();
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
+        MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();
         Console.WriteLine("Self-test passed.");

@@ -1,0 +1,49 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Claudex settings fixture</title>
+<style>
+:root {font:14px system-ui;color:#222;background:#fafafa;--color-token-border:#ddd;--color-token-text-secondary:#666;--color-background-panel:#fff;--color-primary-ghost-hover:#eee}
+:root.dark {color:#eee;background:#181818;--color-token-border:#444;--color-token-text-secondary:#aaa;--color-background-panel:#222;--color-primary-ghost-hover:#333}
+*{box-sizing:border-box} body{margin:0;height:100vh;display:grid;grid-template-rows:auto minmax(0,1fr)} #fixture-tools{padding:12px;display:flex;gap:12px;border-bottom:1px solid var(--color-token-border)}
+#layout{display:flex;min-height:0} nav{width:230px;flex:none;padding:16px;border-right:1px solid var(--color-token-border)} nav button{display:flex;align-items:center;gap:8px;border:0;border-radius:8px;background:transparent;color:inherit;width:100%;padding:10px;text-align:left} nav svg{flex:none} main{display:flex;flex-direction:column;overflow:hidden;flex:1;min-height:0;min-width:0}.fixture-toolbar{height:32px;flex:none;border-bottom:1px solid var(--color-token-border)}.overflow-y-auto{overflow-y:auto;flex:1;min-height:0} button{cursor:pointer} input{color:inherit;background:transparent} .text-fade-truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:600px){nav{width:64px;padding:8px}nav span{display:none}}
+</style>
+<div id="fixture-tools"><button id="theme">Toggle theme</button><button id="disconnect">Disconnect controller</button><span>Test fixture · simulated controller responses</span></div>
+<div id="layout"><nav aria-label="Settings"><button aria-label="Appearance" data-settings-panel-slug="appearance" aria-current="page"><svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor"/></svg><span class="text-fade-truncate">Appearance</span></button></nav><main><div class="fixture-toolbar">Native settings toolbar</div><div class="overflow-y-auto"><div style="padding:24px"><h1>Appearance</h1><p>Native settings content</p></div></div></main></div>
+<script>
+(async()=>{
+const source=await(await fetch('/scripts/userscript_settings.js')).text();
+const registry=new Map(); window[Symbol.for('claudex-yourself.userscript-registry')]=registry;
+for(const id of ['sidebar_usage','hide_pets_button','hide_invite_a_friend']) registry.set(id,{installed:true,install(){this.installed=true},uninstall(){this.installed=false}});
+const limits=[{id:'general',name:'General',visible:true},{id:'reserve',name:'Reserve',visible:false}];
+Object.assign(registry.get('sidebar_usage'),{getAvailableLimits(){return limits},setLimitVisible(id,value){limits.find(x=>x.id===id).visible=value;window.dispatchEvent(new Event('claudex-usage-limits-changed'))}});
+let connected=true;
+document.querySelector('#theme').onclick=()=>document.documentElement.classList.toggle('dark');
+document.querySelector('#disconnect').onclick=()=>{connected=!connected;document.querySelector('#disconnect').textContent=connected?'Disconnect controller':'Reconnect controller'};
+await new Function(source)();
+const snapshot={version:'0.3.0',claudexUrl:'https://example.test/claudex-release.json',scripts:[{id:'userscript_settings',name:'User script settings',version:'1.4.0',url:'https://example.test/settings.js',autoload:true},{id:'sidebar_usage',name:'Sidebar usage',version:'1.4.6',url:'https://example.test/usage.js',autoload:true},{id:'hide_invite_a_friend',name:'Hide Invite a friend',version:'1.1.0',url:'https://example.test/invite.js',autoload:true},{id:'hide_pets_button',name:'Hide Mini button',version:'1.2.0',url:'https://example.test/mini.js',autoload:true}]};
+snapshot.defaultSchedule={onStartup:true,intervalMinutes:0};
+for(const script of snapshot.scripts){script.schedule={...snapshot.defaultSchedule};script.scheduleInherited=true;}
+setInterval(()=>{
+ if(!connected)return;
+ const c=window[Symbol.for('claudex-yourself.userscript-settings')]; c.updateSources(snapshot);
+ const request=c.takeSourceAction(); if(!request)return;
+ let value,error;
+ if(request.action==='check_claudex'){value={availableVersion:'0.4.0',updateAvailable:true,downloadUrl:'https://example.test/release'};snapshot.claudexCheck={result:value};}
+ if(request.action==='check_script'){value={availableVersion:'1.4.8',updateAvailable:true};snapshot.scripts.find(s=>s.id===request.name).check={result:value};}
+ if(request.action==='set_source'){value={url:request.url};if(request.name)snapshot.scripts.find(s=>s.id===request.name).url=request.url;else snapshot.claudexUrl=request.url;}
+ if(request.action==='set_schedule'){
+  const schedule={onStartup:request.onStartup,intervalMinutes:request.intervalMinutes};
+  if(request.name){const target=snapshot.scripts.find(s=>s.id===request.name);target.schedule=request.inherit?{...snapshot.defaultSchedule}:schedule;target.scheduleInherited=request.inherit;value={schedule:target.schedule,inherited:request.inherit};}
+  else{snapshot.defaultSchedule=schedule;for(const script of snapshot.scripts)if(script.scheduleInherited)script.schedule={...schedule};value={schedule,inherited:false};}
+ }
+ if(request.action==='preview'){
+  if(request.url.includes('bad')) error='Userscript metadata header is missing or incomplete.';
+  else value={previewId:'fixture',url:request.url,metadata:{id:request.name||'custom_demo',name:request.name?'Sidebar usage':'Custom demo',version:'1.4.8',description:'An example userscript from a file URL.',grants:['none']},source:'// Reviewed source\nreturn { installed: true };',installedVersion:request.name?'1.4.6':null,compatibility:{status:'untested_current_version',platformSupported:true}};
+ }
+ if(request.action==='install'){
+  value={name:'custom_demo',version:'1.4.8',installed:true,activation:[{activated:true}]};
+  snapshot.scripts.push({id:'custom_demo',name:'Custom demo',version:'1.4.8',url:'https://example.test/demo.js',autoload:request.autoload});
+ }
+ setTimeout(()=>c.receiveSourceResult({id:request.id,value,error}),150);
+},250);
+})();
+</script></html>

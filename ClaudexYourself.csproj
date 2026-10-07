@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>claudex-yourself</AssemblyName>
     <RootNamespace>ClaudexYourself</RootNamespace>
+    <Version>0.3.0</Version>
     <ApplicationIcon>assets\windows\claudex.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>

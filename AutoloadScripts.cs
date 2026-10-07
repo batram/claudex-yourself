@@ -15,12 +15,7 @@ internal static class AutoloadScripts
         name = NormalizeName(name);
         var scriptPath = Path.Combine(Program.UserScriptDirectory, name + ".js");
         if (enabled && !File.Exists(scriptPath)) throw new FileNotFoundException($"User script '{name}' does not exist.");
-        lock (Gate)
-        {
-            var names = Load();
-            if (enabled) names.Add(name); else names.Remove(name);
-            Save(names);
-        }
+        SetInDirectory(Program.StateDirectory, name, enabled);
         return new AutoloadSetting(name, enabled);
     }
 
@@ -41,7 +36,6 @@ internal static class AutoloadScripts
         {
             await WaitForRendererAsync(TimeSpan.FromSeconds(60));
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-            var codexVersion = UserscriptMetadata.CurrentCodexVersion();
             while (true)
             {
                 JsonElement[] targets;
@@ -79,6 +73,9 @@ internal static class AutoloadScripts
                     if (token.Length == 0) continue;
                     if (!windows.TryGetValue(id, out var window) || window.Token != token)
                     { windows[id] = window = new WindowState(token, target.GetProperty("url").GetString()!); changed = true; }
+                    // The worker can survive an updater relaunch into a new app build.
+                    var codexVersion = names.Any(name => !window.Scripts.ContainsKey(name))
+                        ? UserscriptMetadata.CurrentCodexVersion() : null;
                     foreach (var disabled in window.Scripts.Keys.Where(name => !names.Contains(name)).ToArray())
                     { window.Scripts.Remove(disabled); changed = true; }
                     foreach (var name in names)
@@ -91,8 +88,10 @@ internal static class AutoloadScripts
                             var source = await File.ReadAllTextAsync(path);
                             var metadata = UserscriptMetadata.Parse(source);
                             if (!metadata.Id.Equals(name, StringComparison.OrdinalIgnoreCase)) throw new FormatException($"Userscript @id '{metadata.Id}' does not match filename '{name}'.");
-                            var compatibility = metadata.Compatibility(codexVersion);
+                            var compatibility = metadata.Compatibility(codexVersion!);
                             if (!compatibility.PlatformSupported) { window.Scripts[name] = new { name, state = "skipped", compatibility }; continue; }
+                            var executed = await RendererDevTools.EvaluateStringAsync($"JSON.stringify(window[Symbol.for('claudex-yourself.executed-scripts')]?.[{JsonSerializer.Serialize(name)}] === {JsonSerializer.Serialize(ScriptSources.Hash(source))})", TimeSpan.FromSeconds(3), socket);
+                            if (executed == "true") { window.Scripts[name] = new { name, state = "completed", compatibility, alreadyExecuted = true }; continue; }
                             var result = await Program.RunScriptAsync(source, name, socket);
                             window.Scripts[name] = new { name, state = "completed", compatibility, logs = result.Logs, result = result.Result };
                         }
@@ -162,13 +161,29 @@ internal static class AutoloadScripts
         }
     }
 
-    private static void Save(HashSet<string> names)
+    internal static void SetInDirectory(string directory, string name, bool enabled)
     {
-        Directory.CreateDirectory(Program.StateDirectory);
-        var json = JsonSerializer.Serialize(names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase), new JsonSerializerOptions { WriteIndented = true });
-        var temporary = ConfigurationPath + ".tmp";
-        File.WriteAllText(temporary, json);
-        File.Move(temporary, ConfigurationPath, overwrite: true);
+        name = NormalizeName(name);
+        Directory.CreateDirectory(directory);
+        FileStream? lease = null;
+        for (var attempt = 0; lease is null; attempt++)
+        {
+            try { lease = new FileStream(Path.Combine(directory, "autoload-config.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+            catch (IOException) when (attempt < 50) { Thread.Sleep(100); }
+        }
+        using (lease)
+        {
+            var path = Path.Combine(directory, "autoload.json");
+            var names = new HashSet<string>(File.Exists(path) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(path)) ?? [] : [], StringComparer.OrdinalIgnoreCase);
+            if (enabled) names.Add(name); else names.Remove(name);
+            var temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, JsonSerializer.Serialize(names.Order(StringComparer.OrdinalIgnoreCase).ToArray()));
+                File.Move(temporary, path, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
     }
 
     private static async Task WriteAtomicAsync(string path, string content)

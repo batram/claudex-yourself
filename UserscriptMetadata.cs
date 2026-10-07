@@ -10,7 +10,8 @@ internal sealed record UserscriptMetadata(
     string RunAt,
     string[] Platforms,
     string[] Grants,
-    string[] TestedCodexVersions)
+    string[] TestedCodexVersions,
+    string? UpdateUrl = null)
 {
     private const string StartMarker = "// ==ClaudexUserScript==";
     private const string EndMarker = "// ==/ClaudexUserScript==";
@@ -51,7 +52,8 @@ internal sealed record UserscriptMetadata(
             One("run-at"),
             Csv("platform"),
             Csv("grant"),
-            Many("codex-tested").Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            Many("codex-tested").Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            values.ContainsKey("update-url") ? ScriptSources.NormalizeUrl(One("update-url")).AbsoluteUri : null);
         if (metadata.Platforms.Length == 0) throw new FormatException("Userscript metadata requires @platform.");
         if (metadata.Grants.Length == 0) throw new FormatException("Userscript metadata requires @grant.");
         if (metadata.RunAt != "renderer-ready") throw new FormatException("The only supported @run-at value is renderer-ready.");

@@ -612,10 +612,7 @@ internal static class CodexUpdates
     public static void StartWatcher()
     {
         if (!OperatingSystem.IsWindows()) return;
-        // Progress and errors are persisted under updates/. Keep the CLI caller's pipes independent.
-        var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.ArgumentList.Add("update-watch");
-        Process.Start(start)?.Dispose();
+        BackgroundWorker.Start("update-watch").Dispose();
     }
 
     public static async Task<int> WatchAsync()
