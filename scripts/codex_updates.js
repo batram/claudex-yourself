@@ -6,6 +6,7 @@
 // @run-at        renderer-ready
 // @platform      windows
 // @grant         none
+// @codex-tested  26.1002.6548.0
 // ==/ClaudexUserScript==
 const key = Symbol.for('claudex-yourself.codex-updates');
 window[key]?.uninstall?.();
