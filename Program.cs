@@ -28,11 +28,14 @@ internal static class Program
                     : Fail("launch does not accept options."),
                 "package-debugger" => PackageDebugger(arguments.Skip(1).ToArray()),
                 "launch-vanilla" => arguments.Length == 1
-                    ? await LaunchVanillaAsync()
+                    ? await RunWindowsTaskbarActionAsync("vanilla")
                     : Fail("launch-vanilla does not accept options."),
-                "taskbar" => arguments.Length == 2 && arguments[1] == "vanilla"
-                    ? await LaunchVanillaAsync()
-                    : Fail("taskbar requires vanilla."),
+                "taskbar" => arguments.Length == 2
+                    ? await RunWindowsTaskbarActionAsync(arguments[1].ToLowerInvariant())
+                    : Fail("taskbar requires claudex, vanilla, restart, or quit."),
+                "taskbar-status" => OperatingSystem.IsWindows()
+                    ? await PrintTaskbarStatusAsync(arguments.Contains("--show-hidden"), arguments.Contains("--check-exit"))
+                    : Fail("taskbar-status requires Windows."),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
                 "run-all" => await RunAllAsync(),
@@ -56,6 +59,11 @@ internal static class Program
                 "help" or "--help" or "-h" => Help(),
                 _ => Fail($"Unknown command '{command}'.")
             };
+        }
+        catch (OperationCanceledException) when (arguments.FirstOrDefault() == "taskbar")
+        {
+            Console.WriteLine("Taskbar action cancelled.");
+            return 0;
         }
         catch (Exception exception)
         {
@@ -133,32 +141,52 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<int> LaunchVanillaAsync()
+    private static async Task<int> RunWindowsTaskbarActionAsync(string action)
     {
-        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Vanilla taskbar launch currently supports Windows only.");
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Taskbar actions currently support Windows only.");
+        if (!WindowsTaskbarActions.Names.Contains(action)) throw new ArgumentException("Taskbar action must be claudex, vanilla, restart, or quit.");
+        Directory.CreateDirectory(StateDirectory);
+        FileStream operation;
+        try { operation = new FileStream(Path.Combine(StateDirectory, "taskbar-operation.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        catch (IOException) { Console.WriteLine("Another Claudex taskbar action is already running."); return 0; }
+        using var lease = operation;
         var package = FindCodexPackage();
-        var controlledRunning = IsWindowsControlledCodexRunning();
-        await VanillaLaunch.RunAsync(controlledRunning, async () =>
+        var mode = ReadWindowsCodexLaunchMode();
+        await WindowsTaskbarActions.RunAsync(action, mode, async () =>
         {
-            await RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(5));
+            try { await RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(5)); }
+            catch (TimeoutException)
+            {
+                // Restart/Quit should still work when the controlled renderer is unavailable.
+                if (!OperatingSystem.IsWindows()) throw;
+                await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
+                return;
+            }
             await RendererDevTools.EvaluateStringAsync("(() => { if(typeof window.electronBridge?.sendMessageFromView !== 'function') throw Error('Codex quit bridge unavailable'); setTimeout(() => window.electronBridge.sendMessageFromView({type:'quit-app'}), 250); return JSON.stringify({requested:true}); })()", TimeSpan.FromSeconds(3));
+        }, async () =>
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Taskbar actions require Windows.");
+            await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
         }, async () =>
         {
             try { await CodexUpdates.WaitForExitAsync(package.FamilyName, TimeSpan.FromSeconds(60)); }
             catch (TimeoutException exception)
             {
-                throw new TimeoutException("Codex did not fully exit. Quit may have been cancelled, or a package process is still running. Vanilla restart was cancelled.", exception);
+                throw new TimeoutException("Codex did not fully exit. Quit may have been cancelled, or a package process is still running. The taskbar action was cancelled.", exception);
             }
+        }, () =>
+        {
+            if (Launch() != 0) throw new InvalidOperationException("Could not open Claudex.");
         }, () =>
         {
             var manager = (IApplicationActivationManager)new ApplicationActivationManager();
             ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _), "activate vanilla Codex");
         });
-        Console.WriteLine(controlledRunning ? "Restarted Codex in vanilla mode." : "Launched or activated vanilla Codex.");
+        Console.WriteLine($"Completed taskbar action: {action}.");
         return 0;
     }
 
-    private static bool IsWindowsControlledCodexRunning()
+    private static CodexLaunchMode ReadWindowsCodexLaunchMode()
     {
         // An activation cannot remove Chromium switches from an existing process.
         // Check its command line even when its renderer is not reachable.
@@ -173,7 +201,21 @@ internal static class Program
         var error = query.StandardError.ReadToEnd();
         query.WaitForExit();
         if (query.ExitCode != 0) throw new InvalidOperationException($"Could not inspect Codex's launch mode: {error.Trim()}");
-        return output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Any(VanillaLaunch.HasDebuggingArguments);
+        var commandLines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+        if (commandLines.Length == 0) return CodexLaunchMode.Closed;
+        return commandLines.Any(VanillaLaunch.HasDebuggingArguments) ? CodexLaunchMode.Claudex : CodexLaunchMode.Vanilla;
+    }
+
+    private static async Task<int> PrintTaskbarStatusAsync(bool showHidden, bool checkExit)
+    {
+        if (!OperatingSystem.IsWindows()) return Fail("taskbar-status requires Windows.");
+        if (checkExit)
+        {
+            var package = FindCodexPackage();
+            await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), invoke: false);
+        }
+        Console.WriteLine(JsonSerializer.Serialize(new { mode = ReadWindowsCodexLaunchMode().ToString(), tray = showHidden ? await WindowsTrayQuit.InspectHiddenAsync() : WindowsTrayQuit.Inspect() }));
+        return 0;
     }
 
     private static int LaunchMacOS()
@@ -387,7 +429,7 @@ internal static class Program
         dynamic shell = Activator.CreateInstance(shellType)!;
         dynamic shortcut = shell.CreateShortcut(shortcutPath);
         shortcut.TargetPath = executable;
-        shortcut.Arguments = "launch";
+        shortcut.Arguments = "taskbar claudex";
         shortcut.WorkingDirectory = Path.GetDirectoryName(executable)!;
         shortcut.IconLocation = $"{iconPath},0";
         shortcut.Description = "Launch Codex with the local development control endpoint";
@@ -396,7 +438,7 @@ internal static class Program
         WindowsJumpList.Install(appId, executable, iconPath);
         Console.WriteLine($"Created {shortcutPath}");
         Console.WriteLine($"AppUserModelID: {appId}");
-        Console.WriteLine("Installed taskbar task: Launch or restart vanilla Codex.");
+        Console.WriteLine("Installed taskbar tasks: Open Claudex, Open vanilla Codex, Restart Claudex, Quit Claudex.");
         Console.WriteLine("Replace the old taskbar pin with this shortcut to group controlled Codex windows with the launcher.");
         return 0;
     }
@@ -436,7 +478,9 @@ internal static class Program
     private static void StartAutoloadWorker()
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
+        // Worker results are persisted in autoload-status.json. Do not inherit a caller's
+        // captured output pipe: it would remain open for the worker's entire lifetime.
+        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add("autoload-worker");
         Process.Start(start)?.Dispose();
     }
@@ -513,6 +557,7 @@ internal static class Program
             throw new InvalidOperationException("Userscript renderer identification failed.");
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
+        WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();
         Console.WriteLine("Self-test passed.");
@@ -614,6 +659,7 @@ internal static class Program
     {
         Console.WriteLine("claudex-yourself launch");
         Console.WriteLine("claudex-yourself launch-vanilla (Windows; gracefully restarts a controlled session)");
+        Console.WriteLine("claudex-yourself taskbar claudex|vanilla|restart|quit (Windows)");
         Console.WriteLine("claudex-yourself status");
         Console.WriteLine("claudex-yourself update check|prepare|status|install");
         Console.WriteLine("claudex-yourself list");

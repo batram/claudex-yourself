@@ -95,7 +95,20 @@ On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (con
 
 The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
 
-The Windows shortcut installer also adds **Launch or restart vanilla Codex** to the taskbar's **Tasks** section. This starts the normal packaged app without DevTools or Claudex startup scripts. If controlled Codex is running, it requests normal quit and waits for its package processes to exit before relaunching; cancelling quit aborts the switch. An existing vanilla session is activated without closing it. The CLI equivalent is `claudex-yourself launch-vanilla`. To return to controlled mode, quit vanilla Codex completely and use the controlled shortcut. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.
+The Windows shortcut installer adds four fixed tasks:
+
+| Task | Behavior |
+| --- | --- |
+| **Open Claudex** | Launch controlled Codex or activate an existing controlled session. If vanilla is running, invoke its normal Quit shortcut, then wait for package exit before launching Claudex. |
+| **Open vanilla Codex** | Launch or activate the normal packaged app without DevTools or Claudex startup scripts. If Claudex is running, request normal quit, wait for package exit, then launch vanilla. |
+| **Restart Claudex** | Quit the running Codex app normally in either mode, then restart into Claudex; launch Claudex if closed. |
+| **Quit Claudex** | Quit the running Codex app normally in either mode, respecting Codex's confirmation. Do nothing when closed. |
+
+Windows Codex deliberately stays running after its last window closes. Vanilla mode has no DevTools quit bridge, so the commands locate its notification-area icon, open its tray menu, and invoke the native **Exit** item through Windows accessibility. They reuse an already-open menu, reveal hidden notification icons when necessary, and verify that the menu belongs to the installed Codex process before invoking Exit. No keyboard shortcuts are sent. Controlled sessions use the renderer quit bridge; if renderer readiness fails, the commands fall back to tray Exit. They wait for package exit before relaunching; quit cancellation or failure to exit within 60 seconds aborts the operation. Repeated taskbar clicks cannot start competing operations. The pinned shortcut's primary action is also **Open Claudex**. Tray layout, names, and accessibility support can change with Codex or Windows upgrades and require behavioral revalidation.
+
+`claudex-yourself taskbar-status` reports the detected mode and relevant visible tray controls. Add `--show-hidden` to reveal the notification overflow, or `--check-exit` to open and verify the Codex-owned Exit item without invoking it.
+
+The CLI equivalents are `claudex-yourself taskbar claudex|vanilla|restart|quit`; `launch-vanilla` remains an alias for the vanilla action. The plain `launch` command retains its controlled-launch readiness checks and does not switch a running vanilla session. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.
 
 The task list belongs to Codex's shared AppUserModelID and therefore appears on a normal Codex pin too. The installer preserves the automatic Recent category when Windows history is enabled. Re-run `install-shortcut` after moving the published executable to update the task target as well as the desktop shortcut.
 
