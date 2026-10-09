@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Codex updates
 // @id            codex_updates
-// @version       1.4.6
+// @version       1.5.1
 // @description   Shows Codex updates and the progress of the external claudex update worker.
 // @run-at        renderer-ready
 // @platform      windows
@@ -46,24 +46,41 @@ const draw = () => {
   const { check, checkError, operation } = snapshot;
   const stale = Date.now() - lastSeen > 45000;
   const busy = busyStates.has(operation.state);
+  const newer = (a, b) => {
+    if (!/^\d+\.\d+\.\d+\.\d+$/.test(a ?? '') || !/^\d+\.\d+\.\d+\.\d+$/.test(b ?? '')) return false;
+    const left = a.split('.').map(Number), right = b.split('.').map(Number);
+    const index = left.findIndex((value, i) => value !== right[i]);
+    return index >= 0 && left[index] > right[index];
+  };
+  const announcedNewer = newer(check?.announcedVersion, check?.installed?.version);
+  const storeAvailable = check?.store?.hasUpdate;
+  const storeOnly = storeAvailable && !newer(check?.availableVersion, check?.installed?.version);
+  const freshCheck = Date.parse(snapshot.checkFinishedAtUtc) > Date.parse(operation.updatedAtUtc);
+  const failure = operation.state === 'failed';
+  const currentFailure = failure && !freshCheck;
   const waitingMessage = check?.downloadBlockedReason || (operation.state === 'waiting' &&
     !(Date.parse(snapshot.checkFinishedAtUtc) >= Date.parse(operation.updatedAtUtc)) ? operation.message : null);
-  const completed = operation.state === 'completed' && !check?.updateAvailable;
-  const label = busy || pending === 'install' ? 'Updating\u2026' : waitingMessage ? 'Update pending' : operation.state === 'failed' ? 'Update failed' : check?.updateAvailable ? 'Update available' : completed ? 'Updated' : 'Updates';
+  const completed = operation.state === 'completed' && !freshCheck && !check?.updateAvailable && !announcedNewer && !storeAvailable &&
+    (!operation.targetVersion || operation.targetVersion === check?.installed?.version);
+  const label = busy || pending === 'install' ? 'Updating\u2026' : waitingMessage ? 'Update pending' : currentFailure ? 'Update failed' : check?.updateAvailable || storeAvailable ? 'Update available' : announcedNewer ? 'Update pending' : completed ? 'Updated' : 'Updates';
   badge.setAttribute('aria-label', label);
   badge.title = label;
-  badge.dataset.attention = String(Boolean(check?.updateAvailable || waitingMessage || operation.state === 'failed'));
+  badge.dataset.attention = String(Boolean(check?.updateAvailable || storeAvailable || announcedNewer || waitingMessage || failure));
   details.textContent = stale ? 'The update controller is disconnected. Restart Codex through claudex-yourself to reconnect.'
     : pending === 'install' ? 'Starting the updater\u2026 Codex will reopen automatically when installation finishes.'
     : busy ? operation.message
     : pending === 'check' || snapshot.checkRunning ? 'Checking for updates\u2026'
     : checkError ? `Could not check for updates: ${checkError}`
     : waitingMessage ? waitingMessage
-    : check?.sourceWarning && !check.updateAvailable ? `Codex ${check.installed.version} is installed. ${check.sourceWarning}`
-    : operation.state === 'failed' ? operation.message
+    : currentFailure ? operation.message
+    : storeOnly ? `Microsoft Store has a Codex update (installed: ${check.installed.version}). ${check.store.canSilentlyDownload ? 'Claudex will download it, verify its actual version, and compare it with direct downloads before restarting.' : 'Store downloads are currently unavailable under your Store settings or network configuration. Enable automatic Store updates or use the native updater.'}${check.sourceWarning ? ` ${check.sourceWarning}` : ''}`
+    : check?.sourceWarning && !check.updateAvailable ? `Codex ${check.installed.version} is installed. ${announcedNewer ? `Codex ${check.announcedVersion} is announced, but no newer installable package was found. ` : ''}${check.sourceWarning}`
     : completed ? operation.message
-    : check?.updateAvailable ? `Codex ${check.availableVersion} is available (installed: ${check.installed.version}). The update is downloaded before Codex closes. Active work will be interrupted when it restarts.`
-    : check ? `You have the latest available download: Codex ${check.installed.version}.` : 'Checking for updates\u2026';
+    : check?.updateAvailable ? `Codex ${check.availableVersion} is available (installed: ${check.installed.version}). ${storeAvailable ? (check.store.canSilentlyDownload ? 'A Store update is also available; its verified version will be compared with direct downloads before installation. ' : 'A Store update is also reported, but Store downloads are unavailable under your current settings or network. ') : ''}The update is downloaded before Codex closes. Active work will be interrupted when it restarts.${check.sourceWarning ? ` ${check.sourceWarning}` : ''}`
+    : announcedNewer ? `Codex ${check.announcedVersion} is announced (installed: ${check.installed.version}), but Claudex has not found a newer downloadable or staged package. Check again after the download sources catch up.`
+    : check ? `Codex ${check.installed.version} is installed. No newer update was found in the checked sources.` : 'Checking for updates\u2026';
+  if (failure && freshCheck && !busy && !pending && !snapshot.checkRunning && !checkError && !stale)
+    details.textContent += ` Previous update attempt failed: ${operation.message}`;
   installButton.hidden = !check?.updateAvailable;
   installButton.disabled = stale || busy || pending || Boolean(waitingMessage) || snapshot.checkRunning;
   checkButton.disabled = stale || busy || Boolean(pending) || snapshot.checkRunning;

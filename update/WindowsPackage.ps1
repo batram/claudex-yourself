@@ -1,8 +1,9 @@
 param(
-    [Parameter(Mandatory=$true)][ValidateSet('inspect','staged-candidates','stage','install','register-staged','detach')][string]$Action,
+    [Parameter(Mandatory=$true)][ValidateSet('inspect','staged-candidates','store-check','store-download','stage','install','register-staged','detach')][string]$Action,
     [string]$PackagePath,
     [string]$Launcher,
     [switch]$FinishTargetShutdown,
+    [switch]$MockUpdate,
     [string]$ExpectedUserSid,
     [string]$FailurePath
 )
@@ -13,6 +14,10 @@ try {
         throw 'Approve the update using the same Windows account. Installing for a different administrator account is not supported.'
     }
     switch ($Action) {
+        { $_ -in 'store-check','store-download' } {
+            & (Join-Path $PSScriptRoot 'WindowsStore.ps1') -Action $Action.Substring(6)
+            if ($LASTEXITCODE -ne 0) { throw 'Microsoft Store helper failed.' }
+        }
         'inspect' {
             $package = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1
             if (-not $package) { throw 'OpenAI.Codex is not installed for this Windows user.' }
@@ -50,7 +55,8 @@ try {
             if (-not [IO.Path]::IsPathRooted($Launcher) -or $Launcher.Contains('"') -or -not (Test-Path -LiteralPath $Launcher -PathType Leaf)) { throw 'Invalid updater executable.' }
             # WMI creates this process outside Codex's package/job lifetime. It must survive app quit.
             $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow=[uint16]0 }
-            $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine=('"' + $Launcher + '" update-worker'); ProcessStartupInformation=$startup }
+            $workerArguments = if ($MockUpdate) { ' update-worker --mock-update' } else { ' update-worker' }
+            $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine=('"' + $Launcher + '"' + $workerArguments); ProcessStartupInformation=$startup }
             if ($created.ReturnValue -ne 0) { throw "Could not detach updater (Win32_Process.Create returned $($created.ReturnValue))." }
             @{ processId=$created.ProcessId } | ConvertTo-Json -Compress
         }

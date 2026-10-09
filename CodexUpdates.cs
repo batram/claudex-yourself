@@ -18,7 +18,9 @@ internal static class CodexUpdates
     internal sealed record Package(string FullName, string FamilyName, string Version, string Publisher, string Architecture, string Status, string? InstallLocation = null);
     internal sealed record Release(string BuildVersion, string PackageIdentity, string StoreProductId, int SchemaVersion);
     internal sealed record UpdateCheck(Package Installed, string AvailableVersion, bool UpdateAvailable, string PackageUrl, string? DownloadBlockedReason = null,
-        string? AnnouncedVersion = null, string? Source = null, string? SourceWarning = null, string? CachedPackagePath = null);
+        string? AnnouncedVersion = null, string? Source = null, string? SourceWarning = null, string? CachedPackagePath = null,
+        StoreAvailability? Store = null);
+    internal sealed record StoreAvailability(bool HasUpdate, bool CanSilentlyDownload, bool Completed = false, string? OverallState = null);
     internal sealed record UpdateCandidate(string Version, string PackageUrl, string Source, string? CachedPackagePath = null);
     internal sealed record DownloadReceipt(string Url, string? ETag, long Length, DateTime LastWriteTimeUtc);
     private sealed class UpdateNotReadyException(string message) : InvalidOperationException(message);
@@ -33,21 +35,32 @@ internal static class CodexUpdates
             "prepare" => await PrepareCommandAsync(),
             "status" => await ReadStatusAsync(),
             "install" => await ScheduleAsync(),
-            _ => throw new ArgumentException("update requires check, prepare, status, or install.")
+            "restart-test" => await ScheduleAsync(mockUpdate: true),
+            _ => throw new ArgumentException("update requires check, prepare, status, install, or restart-test.")
         };
         Console.WriteLine(JsonSerializer.Serialize(result, Json));
         return 0;
     }
 
-    public static async Task<UpdateCheck> CheckAsync()
+    public static async Task<UpdateCheck> CheckAsync(bool includeStore = true)
     {
         RequireWindows();
         var installed = JsonSerializer.Deserialize<Package>(await WindowsAsync("inspect"), Json)
             ?? throw new InvalidOperationException("Windows returned no package metadata.");
         if (installed.Status != "Ok") throw new InvalidOperationException($"Codex package status is {installed.Status}; repair it in Windows before updating.");
         using var client = CreateClient(TimeSpan.FromSeconds(30));
-        var release = JsonSerializer.Deserialize<Release>(await client.GetStringAsync(ManifestUrl), Json)
-            ?? throw new InvalidOperationException("OpenAI returned an empty update manifest.");
+        string? manifestWarning = null;
+        Release release;
+        try
+        {
+            release = JsonSerializer.Deserialize<Release>(await client.GetStringAsync(ManifestUrl), Json)
+                ?? throw new InvalidOperationException("OpenAI returned an empty update manifest.");
+        }
+        catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException)
+        {
+            manifestWarning = $"Could not read the release announcement: {exception.Message}";
+            release = new(installed.Version, "OpenAI.Codex", "9PLM9XGG6VKS", 1);
+        }
         var check = ValidateRelease(installed, release);
         var local = ReadCachedCandidates(check, Root).ToList();
         string? stagedWarning = null;
@@ -66,8 +79,34 @@ internal static class CodexUpdates
             check = check with { SourceWarning = string.Join(" ", new[] { check.SourceWarning, stagedWarning }.Where(s => s is not null)) };
         if (check.UpdateAvailable && check.Source != "windows-staged")
             check = check with { DownloadBlockedReason = await GetDownloadBlockAsync(client, check, check.CachedPackagePath ?? CachePath(check)) };
+        if (manifestWarning is not null) check = AddSourceWarning(check, manifestWarning);
+        if (includeStore)
+        {
+            try
+            {
+                var store = JsonSerializer.Deserialize<StoreAvailability>(await WindowsAsync("store-check"), Json)
+                    ?? throw new InvalidOperationException("Microsoft Store returned no availability information.");
+                check = WithStoreAvailability(check, store);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException or TimeoutException)
+            {
+                check = AddSourceWarning(check, $"Could not check Microsoft Store: {exception.Message}");
+            }
+        }
         return check;
     }
+
+    private static UpdateCheck AddSourceWarning(UpdateCheck check, string warning) => check with {
+        SourceWarning = string.Join(" ", new[] { check.SourceWarning, warning }.Where(s => !string.IsNullOrEmpty(s)))
+    };
+
+    // StorePackageUpdate.Package describes the installed package. Never use its
+    // version, or the public announcement, as a verified Store target version.
+    internal static UpdateCheck WithStoreAvailability(UpdateCheck check, StoreAvailability store) => check with {
+        Store = store,
+        UpdateAvailable = check.UpdateAvailable || store.HasUpdate && store.CanSilentlyDownload,
+        DownloadBlockedReason = store.HasUpdate && store.CanSilentlyDownload ? null : check.DownloadBlockedReason
+    };
 
     private static string VersionedPackageUrl(UpdateCheck check) => new Uri(new Uri(ManifestUrl),
         $"releases/{check.AvailableVersion}/ChatGPT-{check.Installed.Architecture}.msix").AbsoluteUri;
@@ -147,7 +186,6 @@ internal static class CodexUpdates
         var latest = ParseVersion(release.BuildVersion);
         return new(installed, latest.ToString(), latest > current,
             // Documented direct-MSIX deployment link; Store announcements can precede this asset.
-            // This companion does not currently use native Codex's Store download API.
             // The announcement is a discovery hint; resolve actual candidates before installation.
             new Uri(new Uri(ManifestUrl), $"ChatGPT-{installed.Architecture}.msix").AbsoluteUri);
     }
@@ -213,7 +251,7 @@ internal static class CodexUpdates
         catch (Exception exception) { await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message); throw; }
     }
 
-    public static async Task<object> ScheduleAsync()
+    public static async Task<object> ScheduleAsync(bool mockUpdate = false)
     {
         RequireWindows();
         // A normal quit and verified exit are required before any installation/recovery attempt.
@@ -223,11 +261,13 @@ internal static class CodexUpdates
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate updater executable.");
         if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Use the published claudex-yourself executable to schedule updates.");
-        var response = await WindowsAsync("detach", "-Launcher", executable);
-        return new { state = "scheduled", worker = JsonSerializer.Deserialize<JsonElement>(response), message = "The updater will download and validate the package, quit Codex normally, install after exit, and relaunch in controlled mode." };
+        var response = await WindowsAsync("detach", mockUpdate ? ["-Launcher", executable, "-MockUpdate"] : ["-Launcher", executable]);
+        return new { state = "scheduled", worker = JsonSerializer.Deserialize<JsonElement>(response), message = mockUpdate
+            ? "The mock update test will quit Codex normally and relaunch in controlled mode. No package will be downloaded or installed."
+            : "The updater will download and validate the package, quit Codex normally, install after exit, and relaunch in controlled mode." };
     }
 
-    public static async Task<int> RunWorkerAsync()
+    public static async Task<int> RunWorkerAsync(bool mockUpdate = false)
     {
         RequireWindows();
         Directory.CreateDirectory(Root);
@@ -239,37 +279,47 @@ internal static class CodexUpdates
         var restarting = false;
         try
         {
-            await SetStatusAsync("checking", "Checking for a Codex update.");
-            var check = await CheckAsync();
+            await SetStatusAsync("checking", mockUpdate ? "Mock update restart test: inspecting the installed package; no download or installation will run." : "Checking for a Codex update.");
+            UpdateCheck check;
+            if (mockUpdate)
+            {
+                var current = JsonSerializer.Deserialize<Package>(await WindowsAsync("inspect"), Json)
+                    ?? throw new InvalidOperationException("Windows returned no package metadata.");
+                if (current.Status != "Ok") throw new InvalidOperationException($"Codex package status is {current.Status}.");
+                check = new(current, current.Version, true, "");
+            }
+            else check = await CheckAsync();
             target = check.AvailableVersion;
             if (!check.UpdateAvailable)
             {
-                await SetStatusAsync("current", check.SourceWarning is null
-                    ? $"Codex {check.Installed.Version} is the newest version found through the available download sources."
-                    : $"No newer verified package was found. {check.SourceWarning}", target);
-                return 0;
+                var unavailable = UnavailableUpdateStatus(check);
+                await SetStatusAsync(unavailable.State, unavailable.Message, target);
+                return unavailable.State == "current" ? 0 : 1;
             }
-            var prepared = await PrepareAsync(check);
-            var packagePath = prepared.PackagePath ?? throw new InvalidOperationException("The update is no longer available.");
+            var prepared = mockUpdate ? new PreparedUpdate("ready", null, check.Installed.Version) : await PrepareAsync(check);
+            target = prepared.TargetVersion;
+            check = check with { AvailableVersion = target };
+            if (!mockUpdate && prepared.PackagePath is null) throw new InvalidOperationException("The update is no longer available.");
             await SetStatusAsync("closing", "Closing Codex. Accept its quit confirmation to continue; cancelling leaves the update uninstalled.", target);
             // Queue quit after acknowledging CDP, so a lost connection cannot be mistaken for a sent request.
             await RendererDevTools.EvaluateStringAsync("(() => { if(typeof window.electronBridge?.sendMessageFromView !== 'function') throw Error('Codex quit bridge unavailable'); setTimeout(() => window.electronBridge.sendMessageFromView({type:'quit-app'}), 250); return JSON.stringify({requested:true}); })()", TimeSpan.FromSeconds(5));
             await WaitForExitAsync(check.Installed.FamilyName, TimeSpan.FromSeconds(60));
             appExited = true;
-            await SetStatusAsync("installing", "Codex has exited. Installing the update.", target);
-            await InstallWithRetryAsync(check, prepared);
+            await SetStatusAsync("installing", mockUpdate ? "Mock update restart test: Codex has fully exited. Skipping package installation." : "Codex has exited. Installing the update.", target);
+            if (!mockUpdate) await InstallWithRetryAsync(check, prepared);
             var installed = JsonSerializer.Deserialize<Package>(await WindowsAsync("inspect"), Json)!;
-            if (installed.Status != "Ok" || ParseVersion(installed.Version) < ParseVersion(target))
+            if (installed.Status != "Ok" || ParseVersion(installed.Version) < ParseVersion(target) || mockUpdate && installed.Version != target)
                 throw new InvalidOperationException($"Windows did not complete registration: expected {target}, found {installed.Version}, status {installed.Status}.");
-            await SetStatusAsync("restarting", $"Installed Codex {installed.Version}. Restarting in controlled mode.", target);
+            await SetStatusAsync("restarting", mockUpdate ? $"Mock update restart test: reopening unchanged Codex {installed.Version} in controlled mode." : $"Installed Codex {installed.Version}. Restarting in controlled mode.", target);
             restarting = true;
             var launched = Program.Launch(requireControlled: true);
             if (launched != 0) throw new InvalidOperationException("Update installed but controlled relaunch failed.");
-            await SetStatusAsync("completed", $"Updated to Codex {installed.Version} and relaunched in controlled mode.", target);
+            await SetStatusAsync("completed", mockUpdate ? $"Mock update restart test completed: Codex {installed.Version} exited and relaunched in controlled mode. No package was downloaded or installed." : $"Updated to Codex {installed.Version} and relaunched in controlled mode.", target);
             return 0;
         }
         catch (Exception exception)
         {
+            Console.Error.WriteLine(exception);
             await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message, target, restarting ? "controlled-relaunch" : null);
             // Make a failure visible again if we already closed the app. Keep the failure status intact.
             if (appExited && exception is not TimeoutException)
@@ -283,16 +333,41 @@ internal static class CodexUpdates
 
     internal sealed record PreparedUpdate(string State, string? PackagePath, string TargetVersion, bool AlreadyStaged = false);
 
+    internal static UpdateStatus UnavailableUpdateStatus(UpdateCheck check)
+    {
+        var announcedNewer = check.AnnouncedVersion is not null && ParseVersion(check.AnnouncedVersion) > ParseVersion(check.Installed.Version);
+        if (announcedNewer || check.Store?.HasUpdate == true)
+            return new("waiting", $"The update could not be prepared: Codex {check.Installed.Version} is still installed, but no newer package is currently obtainable. The Store download or staged package may have changed since the panel checked. Codex has been left open. Check again to refresh availability. {check.SourceWarning}".TrimEnd());
+        return new("current", check.SourceWarning is null
+            ? $"Codex {check.Installed.Version} is the newest version found through the checked sources."
+            : $"No newer verified package was found. {check.SourceWarning}");
+    }
+
     internal static async Task<PreparedUpdate> PrepareAsync(UpdateCheck check)
     {
         RequireWindows();
         if (!check.UpdateAvailable) return new("current", null, check.AvailableVersion);
         Directory.CreateDirectory(Root);
         using var preparationLock = TryLock("prepare.lock") ?? throw new InvalidOperationException("Another updater is preparing a package. Try again after it finishes.");
+        if (check.Store is { HasUpdate: true, CanSilentlyDownload: true })
+        {
+            // Store does not expose the target version before download. Resolve
+            // again afterward and compare actual protected manifests with BOTH
+            // direct endpoints, even if the announcement has moved or is older.
+            await SetStatusAsync("downloading", "Downloading the Microsoft Store update. Its version will be verified and compared with direct downloads before Codex closes.");
+            check = await ResolveAfterStoreDownloadAsync(async () =>
+            {
+                var result = JsonSerializer.Deserialize<StoreAvailability>(await WindowsAsync("store-download"), Json);
+                if (result is null || result.HasUpdate && !result.Completed)
+                    throw new InvalidOperationException("Microsoft Store did not complete the update download.");
+            }, () => CheckAsync(includeStore: false));
+            if (!check.UpdateAvailable)
+                throw new UpdateNotReadyException(check.SourceWarning ?? "Microsoft Store did not expose a newer verified staged package. Check again when the native download finishes.");
+        }
         var stagedManifest = FindStagedManifest(check);
         if (stagedManifest is not null)
         {
-            await SetStatusAsync("ready", $"Windows has already staged Codex {check.AvailableVersion}. Ready to finish installation after Codex exits.", check.AvailableVersion);
+            await SetStatusAsync("ready", $"Windows has already staged Codex {check.AvailableVersion}. Ready to finish installation after Codex exits. {check.SourceWarning}".TrimEnd(), check.AvailableVersion);
             return new("ready", stagedManifest, check.AvailableVersion, AlreadyStaged: true);
         }
         var path = check.CachedPackagePath ?? CachePath(check);
@@ -318,8 +393,22 @@ internal static class CodexUpdates
         }
         await SetStatusAsync("staging", "Validating and staging the signed Windows package. If Windows requests administrator approval, approve it using this Windows account to continue.", check.AvailableVersion);
         await WindowsAsync("stage", "-PackagePath", path);
-        await SetStatusAsync("ready", "Update downloaded, validated, and staged. Codex has not been closed.", check.AvailableVersion);
+        await SetStatusAsync("ready", $"Update downloaded, validated, and staged. Codex has not been closed. {check.SourceWarning}".TrimEnd(), check.AvailableVersion);
         return new("ready", path, check.AvailableVersion);
+    }
+
+    internal static async Task<UpdateCheck> ResolveAfterStoreDownloadAsync(Func<Task> download, Func<Task<UpdateCheck>> resolve)
+    {
+        string? warning = null;
+        try { await download(); }
+        catch (Exception exception) when (exception is InvalidOperationException or TimeoutException)
+        {
+            warning = $"Microsoft Store download failed: {exception.Message}";
+        }
+        var resolved = await resolve();
+        // Re-resolution must report verified packages, without the Store hint.
+        if (resolved.Store is not null) throw new InvalidOperationException("Store preparation must resolve verified package versions.");
+        return warning is null ? resolved : AddSourceWarning(resolved, warning);
     }
 
     private static async Task InstallWithRetryAsync(UpdateCheck check, PreparedUpdate prepared)
@@ -353,6 +442,7 @@ internal static class CodexUpdates
     }
 
     internal static bool IsPackageInUse(string error) => error.Contains("0x80073D02", StringComparison.OrdinalIgnoreCase)
+        || error.Contains("0x800700E9", StringComparison.OrdinalIgnoreCase)
         || error.Contains("apps need to be closed", StringComparison.OrdinalIgnoreCase);
 
     private static string CachePath(UpdateCheck check) => Path.Combine(Root, $"ChatGPT-{check.Installed.Architecture}-{check.AvailableVersion}.msix");
@@ -371,6 +461,17 @@ internal static class CodexUpdates
     }
 
     internal static async Task<string?> GetDownloadBlockAsync(HttpClient client, UpdateCheck check, string path)
+    {
+        try { return await GetDownloadBlockCoreAsync(client, check, path); }
+        catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException)
+        {
+            // A direct endpoint race/outage must not prevent the independent
+            // Store check. Preparation will re-resolve before using a package.
+            return $"Could not verify the direct download: {exception.Message} Use Check again to retry.";
+        }
+    }
+
+    private static async Task<string?> GetDownloadBlockCoreAsync(HttpClient client, UpdateCheck check, string path)
     {
         var rejectedCache = false;
         if (File.Exists(path))
@@ -603,8 +704,14 @@ internal static class CodexUpdates
         {
             var temporary = StatusPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             using var current = Process.GetCurrentProcess();
-            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(new UpdateStatus(state, message, target, DateTime.UtcNow, current.Id, current.StartTime.ToUniversalTime(), failureKind), Json));
+            var status = new UpdateStatus(state, message, target, DateTime.UtcNow, current.Id, current.StartTime.ToUniversalTime(), failureKind);
+            var serialized = JsonSerializer.Serialize(status, Json);
+            await File.WriteAllTextAsync(temporary, serialized);
             File.Move(temporary, StatusPath, overwrite: true);
+            // Preserve attempt history: a later check/retry must not erase the
+            // evidence needed to diagnose a failed shutdown or relaunch.
+            Console.Error.WriteLine(serialized);
+            await File.AppendAllTextAsync(Path.Combine(Root, "history.jsonl"), serialized + Environment.NewLine);
         }
         finally { StatusGate.Release(); }
     }
@@ -627,6 +734,7 @@ internal static class CodexUpdates
         }
         using var watcherLock = acquired;
         if (watcherLock is null) return 0;
+        Program.RestoreWindowsTaskbarActions();
         var source = await File.ReadAllTextAsync(Path.Combine(Program.BundledScriptDirectory, "codex_updates.js"));
         var nextCheck = DateTime.MinValue;
         UpdateCheck? check = null;

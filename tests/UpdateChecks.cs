@@ -19,10 +19,17 @@ internal static class UpdateChecks
         Reject(() => CodexUpdates.ValidateRelease(installed, release with { SchemaVersion = 2 }));
         Assert(!CodexUpdates.IsPackageInUse("0x80070005 Access denied"), "do not retry arbitrary access denied");
         Assert(CodexUpdates.IsPackageInUse("0x80073D02"), "retry package-in-use");
+        Assert(CodexUpdates.IsPackageInUse("0x800700E9"), "recognize Store package-in-use HRESULT from Windows deployment log");
+        var disappeared = check with { UpdateAvailable = false, AvailableVersion = installed.Version, AnnouncedVersion = release.BuildVersion };
+        Assert(CodexUpdates.UnavailableUpdateStatus(disappeared).State == "waiting" && CodexUpdates.UnavailableUpdateStatus(disappeared).Message.Contains("left open"),
+            "disappeared staged update cannot silently become an up-to-date success");
+        Assert(CodexUpdates.UnavailableUpdateStatus(disappeared with { AnnouncedVersion = installed.Version }).State == "current",
+            "genuinely current registration remains current");
         await CheckInstallRecoveryAsync();
         await CheckRelaunchRecoveryAsync();
         await CheckDownloadRetriesAsync(check);
         await CheckAvailableVersionsAsync(check);
+        await CheckStoreVersionsAsync(check);
         var path = Path.Combine(Path.GetTempPath(), $"claudex-update-test-{Guid.NewGuid():N}.msix");
         try
         {
@@ -127,7 +134,7 @@ internal static class UpdateChecks
         modes.Clear(); retries.Clear();
         await CodexUpdates.RetryPackageInstallAsync(finish => { modes.Add(finish); return Task.CompletedTask; }, attempt => { retries.Add(attempt); return Task.CompletedTask; });
         Assert(modes.SequenceEqual(new[] { false }) && retries.Count == 0, "successful ordinary install needs no shutdown recovery");
-        foreach (var message in new[] { "0x80070005", "0x80073D02" })
+        foreach (var message in new[] { "0x80070005", "0x80073D02", "0x800700E9" })
         {
             modes.Clear(); retries.Clear();
             try
@@ -136,7 +143,7 @@ internal static class UpdateChecks
                 throw new Exception("Installation failure must remain visible.");
             }
             catch (InvalidOperationException exception) when (exception.Message == message) { }
-            Assert(modes.Count == (message == "0x80073D02" ? 3 : 1), "bounded retries only for package-in-use");
+            Assert(modes.Count == (message == "0x80070005" ? 1 : 3), "bounded retries only for package-in-use");
         }
         var calls = 0;
         try
@@ -171,6 +178,13 @@ internal static class UpdateChecks
         }));
         try
         {
+            using (var offline = new HttpClient(new HeaderHandler(_ => new(System.Net.HttpStatusCode.ServiceUnavailable))))
+            {
+                var block = await CodexUpdates.GetDownloadBlockAsync(offline, check, path);
+                Assert(block?.Contains("direct download") == true, "direct preflight failure is a blocked source rather than aborting Store discovery");
+                Assert(CodexUpdates.WithStoreAvailability(check with { DownloadBlockedReason = block }, new(true, true)).DownloadBlockedReason is null,
+                    "Store path remains available when direct preflight fails");
+            }
             for (var attempt = 0; attempt < 3; attempt++)
                 Assert((await CodexUpdates.GetDownloadBlockAsync(client, check, path))?.Contains(sourceVersion) == true, "announced version ahead of download stays blocked");
             Assert(requests == 3, "retries use only three HEAD requests");
@@ -256,6 +270,51 @@ internal static class UpdateChecks
             Assert(!CodexUpdates.ReadCachedCandidates(announced, directory).Any(), "untrusted cached package cannot become a candidate");
         }
         finally { File.Delete(path); Directory.Delete(directory); }
+    }
+
+    private static async Task CheckStoreVersionsAsync(CodexUpdates.UpdateCheck seed)
+    {
+        var installedOnly = seed with { AvailableVersion = seed.Installed.Version, UpdateAvailable = false, Source = "installed" };
+        var store = new CodexUpdates.StoreAvailability(true, true);
+        var available = CodexUpdates.WithStoreAvailability(installedOnly, store);
+        Assert(available.UpdateAvailable && available.AvailableVersion == seed.Installed.Version && available.Store == store,
+            "Store-only update is actionable without pretending installed package version is its target");
+        Assert(!CodexUpdates.WithStoreAvailability(installedOnly, store with { CanSilentlyDownload = false }).UpdateAvailable,
+            "Store download policy is respected");
+        Assert(CodexUpdates.WithStoreAvailability(seed, store with { CanSilentlyDownload = false }).UpdateAvailable,
+            "Store policy does not disable a verified direct update");
+        Assert(CodexUpdates.WithStoreAvailability(seed with { DownloadBlockedReason = "Direct asset changed" }, store).DownloadBlockedReason is null,
+            "blocked direct download does not hide an available Store path");
+        Assert(CodexUpdates.WithStoreAvailability(seed with { DownloadBlockedReason = "Direct asset changed" }, store with { HasUpdate = false }).DownloadBlockedReason is not null,
+            "no Store update cannot bypass direct validation");
+        var announced = seed with { AvailableVersion = "26.901.6511.0" };
+        var stableVersion = "26.901.5280.0";
+        using var client = new HttpClient(new HeaderHandler(request => {
+            if (request.RequestUri!.AbsolutePath.Contains("/releases/")) return new(System.Net.HttpStatusCode.NotFound);
+            var response = new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+            response.Headers.Add("x-ms-meta-package_version", stableVersion);
+            return response;
+        }));
+        var downloaded = false;
+        Task<CodexUpdates.UpdateCheck> Resolve() {
+            Assert(downloaded, "compare verified targets only after Store download completes");
+            return CodexUpdates.ResolveAvailableAsync(client, announced,
+                [new("26.901.7000.0", seed.PackageUrl, "windows-staged")]);
+        }
+        var resolved = await CodexUpdates.ResolveAfterStoreDownloadAsync(() => { downloaded = true; return Task.CompletedTask; }, Resolve);
+        Assert(resolved.AvailableVersion == "26.901.7000.0" && resolved.Source == "windows-staged",
+            "actual Store target newer than public announcement and direct download wins");
+        stableVersion = "26.901.8000.0";
+        resolved = await CodexUpdates.ResolveAfterStoreDownloadAsync(() => Task.CompletedTask, Resolve);
+        Assert(resolved.AvailableVersion == stableVersion && resolved.Source == "stable", "direct target newer than downloaded Store package wins");
+        stableVersion = "26.901.5280.0";
+        resolved = await CodexUpdates.ResolveAfterStoreDownloadAsync(() => Task.FromException(new InvalidOperationException("Store offline")),
+            () => CodexUpdates.ResolveAvailableAsync(client, announced, []));
+        Assert(resolved.AvailableVersion == stableVersion && resolved.UpdateAvailable && resolved.SourceWarning!.Contains("Store offline"),
+            "failed Store download falls back to verified direct update and keeps failure visible");
+        resolved = await CodexUpdates.ResolveAfterStoreDownloadAsync(() => Task.CompletedTask,
+            () => Task.FromResult(installedOnly));
+        Assert(!resolved.UpdateAvailable, "Store completion without newer protected manifest never authorizes installation");
     }
 
     private sealed class HeaderHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

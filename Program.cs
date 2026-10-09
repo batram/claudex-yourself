@@ -47,7 +47,7 @@ internal static class Program
                 "sources-watch" => await BackgroundWorker.RunAsync("sources-watch", SourceUpdateWatcher.RunAsync),
                 "mac-relaunch-watch" => await BackgroundWorker.RunAsync("mac-relaunch-watch", () => MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray())),
                 "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
-                "update-worker" => await CodexUpdates.RunWorkerAsync(),
+                "update-worker" => await BackgroundWorker.RunAsync("update-worker", () => CodexUpdates.RunWorkerAsync(arguments.Contains("--mock-update"))),
                 "update-watch" => await BackgroundWorker.RunAsync("update-watch", CodexUpdates.WatchAsync),
                 "autoload" => arguments.Length == 3
                     ? SetAutoload(arguments[1], arguments[2])
@@ -448,6 +448,27 @@ internal static class Program
         Console.WriteLine("Installed taskbar tasks: Open Claudex, Open vanilla Codex, Restart Claudex, Quit Claudex.");
         Console.WriteLine("Replace the old taskbar pin with this shortcut to group controlled Codex windows with the launcher.");
         return 0;
+    }
+
+    internal static void RestoreWindowsTaskbarActions()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var package = FindCodexPackage();
+            var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve taskbar launcher.");
+            var icon = Path.Combine(AppContext.BaseDirectory, "claudex.ico");
+            if (!File.Exists(icon)) throw new FileNotFoundException("Taskbar icon is missing.", icon);
+            WindowsJumpList.Install($"{package.FamilyName}!App", executable, icon);
+            var failure = Path.Combine(StateDirectory, "taskbar-error.txt");
+            if (File.Exists(failure)) File.Delete(failure);
+        }
+        catch (Exception exception)
+        {
+            Directory.CreateDirectory(StateDirectory);
+            File.WriteAllText(Path.Combine(StateDirectory, "taskbar-error.txt"), exception.ToString());
+            Console.Error.WriteLine($"Could not restore Claudex taskbar actions: {exception.Message}");
+        }
     }
 
     private static int ConfigureCodex()
