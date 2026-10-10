@@ -1,0 +1,341 @@
+// ==ClaudexUserScript==
+// @name          Merge remote projects
+// @id            merge_remote_projects
+// @version       1.3.0
+// @description   Groups Codex's loaded remote session catalog under matching local projects.
+// @run-at        renderer-ready
+// @platform      windows, macos, linux
+// @codex-tested  26.1007.2314.0
+// @grant         none
+// ==/ClaudexUserScript==
+const scriptId = "merge_remote_projects";
+const stateKey = Symbol.for("claudex-yourself.merge-remote-projects");
+const registryKey = Symbol.for("claudex-yourself.userscript-registry");
+window[stateKey]?.uninstall?.();
+const projectSelector = "[data-app-action-sidebar-project-row]";
+const threadSelector = "[data-app-action-sidebar-thread-row]";
+const ownedSelector = "[data-claudex-merged-remote]";
+const normalize = value => String(value || "").trim().toLowerCase();
+const folder = value => normalize(String(value || "").replace(/[\\/]+$/, "").split(/[\\/]/).pop());
+const repo = value => {
+  if (!value) return null;
+  if (value.owner && value.repoName) return normalize(`${value.owner}/${value.repoName}`);
+  // Native project metadata supplies owner/repo without a host; compare that same identity.
+  const path = String(value).replace(/[?#].*$/, "").replace(/\.git\/?$/i, "")
+    .replace(/^[^/@]+@[^/:]+:/, "").replace(/^[a-z]+:\/\/[^/]+\//i, "");
+  const parts = path.split("/").filter(Boolean);
+  return parts.length >= 2 ? normalize(parts.slice(-2).join("/")) : null;
+};
+const repositories = value => new Set([
+  repo(value.gitInfo?.originUrl),
+  ...(value.gitRepos || []).map(entry => repo(entry.ownerRepo) || repo(entry.originUrl))
+].filter(Boolean));
+const score = (remote, local) => {
+  const a = repositories(remote), b = repositories(local);
+  if (a.size && b.size) return [...a].some(id => b.has(id)) ? 100 : 0;
+  const localNames = new Set([normalize(local.label), ...(local.rootPaths || [local.path]).map(folder)].filter(Boolean));
+  const remoteNames = [normalize(remote.label), folder(remote.cwd || remote.path)];
+  return remoteNames.some(name => name && localNames.has(name)) ? 10 : 0;
+};
+const match = (remote, locals) => {
+  const ranked = locals.map(local => ({ local, score: score(remote, local) })).filter(entry => entry.score)
+    .sort((a, b) => b.score - a.score);
+  return ranked.length && (ranked.length === 1 || ranked[0].score > ranked[1].score) ? ranked[0].local : null;
+};
+const propsAbove = (element, predicate) => {
+  let fiber = element?.[Object.keys(element).find(key => key.startsWith("__reactFiber$"))];
+  for (let depth = 0; fiber && depth < 45; depth++, fiber = fiber.return) {
+    if (predicate(fiber.memoizedProps || {})) return fiber.memoizedProps;
+  }
+  return null;
+};
+const groupOf = row => propsAbove(row, props => Boolean(props.group?.projectId))?.group;
+const threadKey = row => `${row.dataset.appActionSidebarThreadHostId || "local"}:${row.dataset.appActionSidebarThreadId}`;
+const threadInfo = row => propsAbove(row, props => Boolean(props.threadSummary) ||
+  Boolean(props.conversationId && Object.hasOwn(props, "displayCwd")));
+let nativeCatalog, catalogSubscription;
+const loadNativeCatalog = async () => {
+  const row = document.querySelector(threadSelector);
+  let fiber = row?.[Object.keys(row).find(key => key.startsWith("__reactFiber$"))];
+  let chain;
+  for (; fiber && !chain; fiber = fiber.return) {
+    for (let dep = fiber.dependencies?.firstContext; dep; dep = dep.next) {
+      if (dep.memoizedValue instanceof Map && [...dep.memoizedValue.values()].some(value => value?.store && value?.queryClient)) {
+        chain = dep.memoizedValue; break;
+      }
+    }
+  }
+  if (!chain) throw new Error("Codex sidebar session scope was not found.");
+  const url = [...document.querySelectorAll("script[src],link[href]")].map(element => element.src || element.href)
+    .concat(performance.getEntriesByType("resource").map(entry => entry.name))
+    .find(name => /\/app-initial-[^/]+\.js(?:\?|$)/.test(name));
+  if (!url) throw new Error("Codex sidebar module was not found.");
+  const source = await (await fetch(url)).text();
+  const exports = source.slice(source.lastIndexOf("export{"));
+  const alias = symbol => {
+    const name = exports.match(new RegExp(`(?:,|\\{)${symbol} as ([^,}]+)`))?.[1];
+    if (!name) throw new Error(`Codex sidebar catalog export ${symbol} is unavailable.`);
+    return name;
+  };
+  // These private symbols are behaviorally checked against the declared Codex
+  // build. Resolve the generated export names rather than pinning asset hashes.
+  const main = await import(url);
+  const sharedUrl = new URL(source.match(/from\s*["']([^"']*app-shared-[^"']+)["']/)?.[1] || "", url).href;
+  if (sharedUrl === url) throw new Error("Codex shared session module was not found.");
+  const shared = await import(sharedUrl);
+  const imported = symbol => {
+    const name = source.match(new RegExp(`[,\\{]([\\w$]+) as ${symbol}[,\\}]`))?.[1];
+    if (!name || !shared[name]) throw new Error(`Codex session export ${symbol} is unavailable.`);
+    return shared[name];
+  };
+  const get = (node, ...args) => {
+    const scope = chain.get(node.scope.id);
+    if (!scope) throw new Error("Codex session scope changed.");
+    return args.length ? node.read(scope, chain, args[0]) : scope.store.get(node.resolve(scope, chain));
+  };
+  const keys = main[alias("Gtr")], list = main[alias("yF")];
+  const conversation = imported("mc"), router = imported("Nf");
+  nativeCatalog = {
+    read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
+      const summary = item.summary || get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId })?.summary;
+      return { ...item, summary, title: summary?.title || item.conversationId };
+    }),
+    navigate: (id, hostId) => get(router).navigate(`/local/${encodeURIComponent(id)}?hostId=${encodeURIComponent(hostId)}`),
+    subscribe: () => {
+      const scope = chain.get(keys.scope.id);
+      return scope.store.sub(keys.resolve(scope, chain), schedule);
+    }
+  };
+};
+const collapsedKey = "claudex-yourself.merge-remote-projects.collapsed.v1";
+let collapsed = {};
+try { collapsed = JSON.parse(localStorage.getItem(collapsedKey) || "{}"); } catch {}
+if (!collapsed || typeof collapsed !== "object" || Array.isArray(collapsed)) collapsed = {};
+const expandedKey = "claudex-yourself.merge-remote-projects.expanded.v1";
+let expanded = {};
+try { expanded = JSON.parse(localStorage.getItem(expandedKey) || "{}"); } catch {}
+if (!expanded || typeof expanded !== "object" || Array.isArray(expanded)) expanded = {};
+const previewCount = 5;
+const updateLimit = (panel, projectId) => {
+  const rows = [...panel.body.querySelectorAll(":scope > [data-claudex-merged-remote='row']")];
+  const showAll = expanded[projectId] === true;
+  rows.forEach((row, index) => { row.hidden = !showAll && index >= previewCount; });
+  panel.more.hidden = panel.body.hidden || rows.length <= previewCount;
+  panel.more.textContent = showAll ? "Show less" : "Show more";
+  panel.more.setAttribute("aria-expanded", String(showAll));
+  panel.more.setAttribute("aria-label", showAll ? "Show fewer remote chats" : `Show all ${rows.length} remote chats`);
+};
+let observer, timer, style;
+let lastStatus = { projects: 0, sessions: 0, hiddenRemoteProjects: 0 };
+const panels = new Map();
+const hidden = new Set();
+const observe = () => observer?.observe(document.body, {
+  childList: true, subtree: true, characterData: true, attributes: true,
+  attributeFilter: ["data-app-action-sidebar-project-collapsed", "data-app-action-sidebar-thread-active", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-thread-selected", "class"]
+});
+const removePanel = (id, panel) => { panel.element.remove(); panels.delete(id); };
+const makeCopy = (source, session) => {
+  const copy = source.cloneNode(true);
+  copy.dataset.claudexMergedRemote = "row";
+  // Cloned native DOM must not masquerade as a second native sidebar/drop target.
+  for (const element of [copy, ...copy.querySelectorAll("*")]) {
+    for (const attribute of [...element.attributes]) {
+      if (attribute.name === "id" || attribute.name.startsWith("data-app-action-") ||
+          attribute.name.startsWith("data-sidebar-") || attribute.name.startsWith("aria-describedby") ||
+          attribute.name === "aria-labelledby" || attribute.name === "draggable") element.removeAttribute(attribute.name);
+    }
+  }
+  const hostId = source.dataset.appActionSidebarThreadHostId || "remote";
+  const info = threadInfo(source);
+  copy.title = `${source.dataset.appActionSidebarThreadTitle || source.textContent.trim()}\nRemote: ${hostId}\n${info?.threadSummary?.cwd || info?.displayCwd || ""}`;
+  // Dispatch on the still-mounted original so React retains navigation, archive,
+  // multi-selection, and context menu handlers with the original host identity.
+  for (const type of ["click", "dblclick", "contextmenu"]) copy.addEventListener(type, event => {
+    event.preventDefault(); event.stopPropagation();
+    if (!source.isConnected) {
+      if (type === "click" && !event.target.closest("button")) nativeCatalog.navigate(session.conversationId, session.hostId);
+      schedule(); return;
+    }
+    const indices = [];
+    let node = event.target;
+    while (node && node !== copy) { indices.unshift([...node.parentNode.childNodes].indexOf(node)); node = node.parentNode; }
+    let target = source;
+    for (const index of indices) target = target.childNodes[index] || target;
+    target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true, cancelable: true, view: window, button: event.button, buttons: event.buttons,
+      clientX: event.clientX, clientY: event.clientY, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
+      shiftKey: event.shiftKey, altKey: event.altKey, detail: event.detail
+    }));
+  }, true);
+  copy.addEventListener("keydown", event => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); event.target.click(); }
+    else if (event.key === "ContextMenu" || event.key === "F10" && event.shiftKey) {
+      event.preventDefault(); copy.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+    }
+  });
+  return copy;
+};
+const makeCatalogRow = session => {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.dataset.claudexMergedRemote = "row";
+  row.className = "claudex-merged-catalog-row sidebar-item";
+  row.title = `${session.title}\nRemote: ${session.hostId}\n${session.cwd || ""}`;
+  const title = document.createElement("span");
+  title.className = "claudex-merged-catalog-title";
+  title.textContent = session.title;
+  const icon = document.createElement("span");
+  icon.innerHTML = '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
+  icon.setAttribute("aria-label", "Remote session");
+  row.append(title, icon);
+  row.addEventListener("click", event => {
+    event.preventDefault(); event.stopPropagation();
+    nativeCatalog.navigate(session.conversationId, session.hostId);
+  });
+  return row;
+};
+const refresh = () => {
+  if (!observer) return;
+  observer.disconnect();
+  try {
+    const sidebar = document.querySelector("[data-app-action-sidebar-scroll]");
+    const locals = [], remotes = [];
+    for (const row of sidebar?.querySelectorAll(projectSelector) || []) {
+      const group = groupOf(row);
+      const container = row.closest("[role='listitem'][data-sidebar-project-kind]");
+      if (!group || !container) continue;
+      const entry = { ...group, row, container };
+      (group.projectKind === "local" ? locals : remotes).push(entry);
+    }
+    if (!nativeCatalog) return;
+    const buckets = new Map(), mounted = new Map();
+    for (const row of sidebar?.querySelectorAll(threadSelector) || []) {
+      if (!row.closest(ownedSelector)) mounted.set(threadKey(row), row);
+    }
+    for (const session of nativeCatalog.read()) {
+      if (!session.hostId || session.hostId === "local" || session.hostId === "durable" || session.workspaceKind === "projectless") continue;
+      const group = remotes.find(group => group.hostId === session.hostId && folder(group.path) === folder(session.cwd));
+      const remote = { ...session.summary, cwd: session.cwd, label: group?.label, gitRepos: group?.gitRepos };
+      const local = match(remote, locals);
+      if (!local) continue;
+      const key = `${session.hostId}:local:${session.conversationId}`;
+      const entries = buckets.get(local.projectId) || [];
+      entries.push({ row: mounted.get(key), session, key,
+        updated: session.summary?.recencyAt || session.summary?.updatedAt || 0 });
+      buckets.set(local.projectId, entries);
+    }
+    for (const element of hidden) element.removeAttribute("data-claudex-merged-hidden");
+    hidden.clear();
+    for (const [id, panel] of panels) if (!buckets.has(id) || !panel.element.isConnected) removePanel(id, panel);
+    let sessions = 0;
+    for (const local of locals) {
+      const entries = buckets.get(local.projectId);
+      if (!entries) continue;
+      entries.sort((a, b) => b.updated - a.updated);
+      let panel = panels.get(local.projectId);
+      if (!panel) {
+        const element = document.createElement("div");
+        element.dataset.claudexMergedRemote = "panel";
+        element.className = "claudex-merged-remote";
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "claudex-merged-remote-label";
+        const body = document.createElement("div");
+        body.id = `claudex-remote-${encodeURIComponent(local.projectId)}`;
+        body.className = "claudex-merged-remote-entries";
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "claudex-merged-remote-more";
+        more.setAttribute("aria-controls", body.id);
+        more.addEventListener("click", event => {
+          event.stopPropagation();
+          expanded[local.projectId] = expanded[local.projectId] !== true;
+          localStorage.setItem(expandedKey, JSON.stringify(expanded));
+          updateLimit(panels.get(local.projectId), local.projectId);
+        });
+        toggle.setAttribute("aria-controls", body.id);
+        toggle.addEventListener("click", event => {
+          event.stopPropagation();
+          collapsed[local.projectId] = collapsed[local.projectId] !== true;
+          localStorage.setItem(collapsedKey, JSON.stringify(collapsed));
+          body.hidden = collapsed[local.projectId];
+          toggle.setAttribute("aria-expanded", String(!body.hidden));
+          updateLimit(panels.get(local.projectId), local.projectId);
+        });
+        element.append(toggle, body, more);
+        local.container.append(element);
+        panels.set(local.projectId, panel = { element, toggle, body, more, signature: "" });
+      }
+      if (panel.element.parentElement !== local.container) local.container.append(panel.element);
+      panel.element.hidden = local.row.dataset.appActionSidebarProjectCollapsed === "true";
+      panel.body.hidden = collapsed[local.projectId] === true;
+      panel.toggle.setAttribute("aria-expanded", String(!panel.body.hidden));
+      panel.toggle.textContent = `Remote (${entries.length})`;
+      const signature = entries.map(entry => `${entry.key}:${entry.row?.outerHTML || entry.session.title}`).join("\n");
+      const sourcesChanged = !panel.sources || entries.some((entry, index) => panel.sources[index] !== entry.row);
+      if (signature !== panel.signature || sourcesChanged) {
+        // Keep the pagination button outside the replaceable list. Never remove
+        // the clicked control or let it become a native sibling's click target.
+        panel.body.replaceChildren(...entries.map(entry => entry.row ? makeCopy(entry.row, entry.session) : makeCatalogRow(entry.session)));
+        panel.signature = signature;
+        panel.sources = entries.map(entry => entry.row);
+      }
+      updateLimit(panel, local.projectId);
+      sessions += entries.length;
+    }
+    // Hide duplicate remote folders only when every known session is represented.
+    // A collapsed/unloaded remote group stays available instead of losing its chats.
+    for (const remote of remotes) {
+      const local = match(remote, locals);
+      const entries = local && buckets.get(local.projectId);
+      const ids = new Set((entries || []).filter(entry => !remote.hostId || entry.session.hostId === remote.hostId)
+        .map(entry => entry.session.conversationId));
+      if (local && remote.threadKeys?.length && remote.threadKeys.every(key => ids.has(key.split(":").pop()))) {
+        remote.container.setAttribute("data-claudex-merged-hidden", ""); hidden.add(remote.container);
+      }
+    }
+    lastStatus = { projects: buckets.size, sessions, hiddenRemoteProjects: hidden.size };
+  } catch (error) {
+    lastStatus = { ...lastStatus, error: String(error) };
+    console.warn("[Claudex merge remote projects]", error);
+  } finally { observe(); }
+};
+const schedule = () => { clearTimeout(timer); timer = setTimeout(refresh, 100); };
+const uninstall = () => {
+  observer?.disconnect(); observer = undefined; clearTimeout(timer);
+  catalogSubscription?.(); catalogSubscription = undefined;
+  for (const [id, panel] of panels) removePanel(id, panel);
+  for (const element of hidden) element.removeAttribute("data-claudex-merged-hidden");
+  hidden.clear(); style?.remove(); style = undefined;
+  return { installed: false };
+};
+const install = async () => {
+  uninstall();
+  style = document.createElement("style");
+  // Native collapse/reopen can append its remounted rows after our panel. Flex
+  // order keeps Remote after them regardless of React's DOM insertion order.
+  style.textContent = "[data-claudex-merged-hidden]{display:none!important}.claudex-merged-remote[hidden],.claudex-merged-remote-entries[hidden]{display:none!important}.claudex-merged-remote{order:1;padding-inline-start:24px}.claudex-merged-remote-label{display:flex;align-items:center;gap:5px;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font-size:11px;opacity:.65;padding:5px 8px 2px}.claudex-merged-remote-label:hover{opacity:1}.claudex-merged-remote-label:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}.claudex-merged-remote-label:before{content:'>';display:inline-block;transition:transform .12s}.claudex-merged-remote-label[aria-expanded=true]:before{transform:rotate(90deg)}.claudex-merged-remote [data-claudex-merged-remote=row]{content-visibility:visible}";
+  document.head.append(style);
+  style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row][hidden],.claudex-merged-remote-more[hidden]{display:none!important}.claudex-merged-remote-more{display:block;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit;opacity:.55;padding:5px 8px}.claudex-merged-remote-more:hover{opacity:1}.claudex-merged-remote-more:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}";
+  style.textContent += ".claudex-merged-catalog-row{display:flex;align-items:center;gap:8px;width:100%;height:var(--height-token-row,30px);padding:0 8px;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit}.claudex-merged-catalog-row:hover{background:var(--color-background-primary-ghost-hover,rgba(128,128,128,.12))}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.claudex-merged-catalog-row:focus-visible{outline:2px solid currentColor;outline-offset:-2px}.claudex-merged-catalog-row>span:last-child{color:#64b8a6;font-size:11px}";
+  observer = new MutationObserver(schedule);
+  try {
+    if (!nativeCatalog) await loadNativeCatalog();
+    if (!observer) return { installed: false };
+    catalogSubscription = nativeCatalog.subscribe();
+  } catch (error) {
+    uninstall();
+    throw error;
+  }
+  refresh();
+  return { installed: true, ...lastStatus };
+};
+const controller = { id: scriptId, install, uninstall, refresh,
+  get installed() { return Boolean(observer); }, get status() { return lastStatus; },
+  matching: { repo, folder, score, match } };
+window[stateKey] = controller;
+(window[registryKey] ??= new Map()).set(scriptId, controller);
+window.dispatchEvent(new CustomEvent("claudex-userscript-registered", { detail: { id: scriptId } }));
+let preferences = {};
+try { preferences = JSON.parse(localStorage.getItem("claudex-yourself.userscripts.v1") || "{}"); } catch {}
+return preferences[scriptId] === false ? uninstall() : await install();
