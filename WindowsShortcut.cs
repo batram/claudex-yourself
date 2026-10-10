@@ -21,7 +21,31 @@ internal static class WindowsShortcut
         }
     }
 
-    internal static void SetStringProperty(object target, Guid format, uint id, string text)
+    internal static void SetWindowIdentity(IntPtr window, string appId, string command, string displayName, string icon)
+    {
+        var iid = typeof(IPropertyStore).GUID;
+        Marshal.ThrowExceptionForHR(SHGetPropertyStoreForWindow(window, ref iid, out var store));
+        try
+        {
+            var format = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+            // Relaunch properties must precede the ID so Shell sees a complete identity.
+            SetStringProperty(store, format, 2, command, commit: false);
+            SetStringProperty(store, format, 4, displayName, commit: false);
+            SetStringProperty(store, format, 3, icon, commit: false);
+            SetStringProperty(store, format, 5, appId, commit: false);
+            var key = new PropertyKey { Format = format, Id = 5 };
+            Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
+            try
+            {
+                if (value.Type != 31 || Marshal.PtrToStringUni(value.Pointer) != appId)
+                    throw new InvalidOperationException("Windows did not accept the controlled window's taskbar identity.");
+            }
+            finally { PropVariantClear(ref value); }
+        }
+        finally { Marshal.FinalReleaseComObject(store); }
+    }
+
+    internal static void SetStringProperty(object target, Guid format, uint id, string text, bool commit = true)
     {
         var store = (IPropertyStore)target;
         var key = new PropertyKey { Format = format, Id = id };
@@ -29,10 +53,24 @@ internal static class WindowsShortcut
         try
         {
             Marshal.ThrowExceptionForHR(store.SetValue(ref key, ref value));
-            Marshal.ThrowExceptionForHR(store.Commit());
+            if (commit) Marshal.ThrowExceptionForHR(store.Commit());
         }
         finally { Marshal.FreeCoTaskMem(value.Pointer); }
     }
+
+    internal static string? GetStringProperty(object target, Guid format, uint id)
+    {
+        var store = (IPropertyStore)target;
+        var key = new PropertyKey { Format = format, Id = id };
+        Marshal.ThrowExceptionForHR(store.GetValue(ref key, out var value));
+        try { return value.Type == 31 ? Marshal.PtrToStringUni(value.Pointer) : null; }
+        finally { PropVariantClear(ref value); }
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHGetPropertyStoreForWindow(IntPtr window, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+
+    [DllImport("ole32.dll")] private static extern int PropVariantClear(ref PropVariant value);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
     private static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr bindContext, uint flags,

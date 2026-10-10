@@ -5,6 +5,25 @@ internal static class WindowsTaskbarActionsChecks
     internal static async Task RunAsync()
     {
         foreach (var mode in Enum.GetValues<CodexLaunchMode>())
+        {
+            var calls = new List<string>();
+            await Program.EnsureControlledLaunchAsync(mode,
+                () => { calls.Add("quit-vanilla"); return Task.CompletedTask; },
+                () => { calls.Add("wait-for-exit"); return Task.CompletedTask; });
+            if (!calls.SequenceEqual(mode == CodexLaunchMode.Vanilla ? new[] { "quit-vanilla", "wait-for-exit" } : []))
+                throw new Exception("Post-update vanilla activation was not drained before controlled launch.");
+        }
+        var waitedAfterCancellation = false;
+        try
+        {
+            await Program.EnsureControlledLaunchAsync(CodexLaunchMode.Vanilla,
+                () => Task.FromException(new OperationCanceledException("Quit cancelled")),
+                () => { waitedAfterCancellation = true; return Task.CompletedTask; });
+            throw new Exception("Post-update vanilla quit cancellation was ignored.");
+        }
+        catch (OperationCanceledException) { }
+        if (waitedAfterCancellation) throw new Exception("Controlled takeover continued after cancelled quit.");
+        foreach (var mode in Enum.GetValues<CodexLaunchMode>())
         foreach (var action in WindowsTaskbarActions.Names)
         {
             var calls = new List<string>();

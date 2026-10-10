@@ -97,7 +97,7 @@ dotnet publish ClaudexYourself.csproj -c Release -r linux-x64 --self-contained t
 
 For a macOS Dock launcher, see [Claudex Dock icon and launcher](assets/macos/README.md).
 
-On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut with the Claudex icon and the installed Codex package's AppUserModelID. Run the command from the published executable you intend to keep: the shortcut stores its absolute path. Unpin the old launcher and pin this shortcut, then verify that running Codex windows group with it. Changing a shortcut's icon alone does not fix a mismatched app identity, and Explorer can retain old pin information until you repin. The shortcut continues to start Codex through Claudex, enabling renderer control and autoload scripts. Recreate and repin it after moving the published directory.
+On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut with the Claudex icon and the separate shell AppUserModelID `ClaudexYourself.ControlledCodex`. The watcher assigns that shell identity to controlled windows while preserving Codex's packaged identity for notifications and updates. Run the command from the published executable you intend to keep: the shortcut stores its absolute path. Unpin the old launcher and pin this shortcut, then verify that running Codex windows group with it. Changing a shortcut's icon alone does not fix a mismatched app identity, and Explorer can retain old pin information until you repin. The shortcut continues to start Codex through Claudex, enabling renderer control and autoload scripts. Recreate and repin it after moving the published directory.
 
 The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
 
@@ -118,7 +118,7 @@ Background autoload, source-update, Windows-update, and macOS-relaunch workers w
 
 The CLI equivalents are `claudex-yourself taskbar claudex|vanilla|restart|quit`; `launch-vanilla` remains an alias for the vanilla action. The plain `launch` command retains its controlled-launch readiness checks and does not switch a running vanilla session. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.
 
-The task list belongs to Codex's shared AppUserModelID and therefore appears on a normal Codex pin too. The installer preserves the automatic Recent category when Windows history is enabled. Re-run `install-shortcut` after moving the published executable to update the task target as well as the desktop shortcut.
+The controlled pin combines Claudex's four actions with native **New chat** and **Recent chats**. The watcher reads native Codex's serialized Jump List shortcuts without modifying its list and refreshes the combined list when native entries change. Mirrored actions retain native titles and account/chat routing, but activate through Claudex so a closed app opens in controlled mode. The separate shell ID prevents native updates from replacing Claudex's actions. Windows history settings and removed destinations remain respected. Re-run `install-shortcut` after moving the published executable to update the task target as well as the desktop shortcut.
 
 ### 3. Try a userscript
 

@@ -53,6 +53,14 @@ internal static class WindowsTrayQuit
         }
         var icons = TrayItems().Where(IsCodexIcon).ToArray();
         if (icons.Length == 0) { await RevealHiddenAsync(); icons = TrayItems().Where(IsCodexIcon).ToArray(); }
+        // A freshly auto-activated package can precede its tray icon. Wait only
+        // before sending an Exit action; never retry a quit the user may cancel.
+        var ready = Stopwatch.StartNew();
+        while (icons.Length == 0 && ready.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            await Task.Delay(100);
+            icons = TrayItems().Where(IsCodexIcon).ToArray();
+        }
         if (icons.Length != 1) throw new InvalidOperationException($"Expected one Codex tray icon; found {icons.Length}. No quit action was sent.");
         var icon = icons[0];
         if (icon.Width <= 0 || icon.Height <= 0) throw new InvalidOperationException("Codex's tray icon is not accessible.");

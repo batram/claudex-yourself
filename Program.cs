@@ -36,6 +36,7 @@ internal static class Program
                 "taskbar-status" => OperatingSystem.IsWindows()
                     ? await PrintTaskbarStatusAsync(arguments.Contains("--show-hidden"), arguments.Contains("--check-exit"))
                     : Fail("taskbar-status requires Windows."),
+                "native-shell" => arguments.Length == 2 ? RunNativeShellAction(arguments[1]) : Fail("native-shell requires an encoded native action."),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
                 "run-all" => await RunAllAsync(),
@@ -47,7 +48,7 @@ internal static class Program
                 "sources-watch" => await BackgroundWorker.RunAsync("sources-watch", SourceUpdateWatcher.RunAsync),
                 "mac-relaunch-watch" => await BackgroundWorker.RunAsync("mac-relaunch-watch", () => MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray())),
                 "update" => await CodexUpdates.CommandAsync(arguments.Skip(1).ToArray()),
-                "update-worker" => await BackgroundWorker.RunAsync("update-worker", () => CodexUpdates.RunWorkerAsync(arguments.Contains("--mock-update"))),
+                "update-worker" => await BackgroundWorker.RunAsync("update-worker", () => CodexUpdates.RunWorkerAsync(arguments.Contains("--mock-update"), arguments.Contains("--mock-vanilla-activation"))),
                 "update-watch" => await BackgroundWorker.RunAsync("update-watch", CodexUpdates.WatchAsync),
                 "autoload" => arguments.Length == 3
                     ? SetAutoload(arguments[1], arguments[2])
@@ -78,6 +79,18 @@ internal static class Program
 
     internal static int Launch(bool requireControlled = false)
     {
+        if (requireControlled && OperatingSystem.IsWindows())
+        {
+            // Windows can automatically activate the new package during registration.
+            // That activation is vanilla; waiting for its DevTools endpoint cannot work.
+            var mode = ReadWindowsCodexLaunchMode();
+            EnsureControlledLaunchAsync(mode, async () =>
+            {
+                if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+                var package = FindCodexPackage();
+                await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
+            }, async () => await CodexUpdates.WaitForExitAsync(FindCodexPackage().FamilyName, TimeSpan.FromSeconds(60))).GetAwaiter().GetResult();
+        }
         if (IsCodexRunning())
         {
             // Foreground activation cannot add DevTools to an existing process.
@@ -96,6 +109,55 @@ internal static class Program
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
         if (OperatingSystem.IsLinux()) return LaunchLinux();
         return Fail("Controlled launch supports Windows, macOS and Linux.");
+    }
+
+    internal static async Task EnsureControlledLaunchAsync(CodexLaunchMode mode, Func<Task> quitVanilla, Func<Task> waitForExit)
+    {
+        if (mode != CodexLaunchMode.Vanilla) return;
+        Console.WriteLine("Windows reopened Codex without DevTools. Quitting that activation before controlled launch.");
+        await quitVanilla();
+        await waitForExit();
+    }
+
+    internal static async Task ActivateVanillaForRestartTestAsync()
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        var package = FindCodexPackage();
+        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _), "mock Windows vanilla activation");
+        var timer = Stopwatch.StartNew();
+        while (timer.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            var mode = ReadWindowsCodexLaunchMode();
+            if (mode == CodexLaunchMode.Claudex) throw new InvalidOperationException("The mock vanilla activation unexpectedly started with DevTools; takeover was not tested.");
+            if (mode == CodexLaunchMode.Vanilla) return;
+            await Task.Delay(100);
+        }
+        throw new TimeoutException("Mock vanilla Codex did not start.");
+    }
+
+    internal static string DecodeNativeShellAction(string encoded)
+    {
+        if (encoded.Length > 32768) throw new ArgumentException("Native shell action exceeds the size limit.");
+        var argument = Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+        const string prefix = "--chatgpt-shell=";
+        if (!argument.StartsWith(prefix, StringComparison.Ordinal)) throw new ArgumentException("Unexpected native shell action prefix.");
+        using var action = JsonDocument.Parse(Uri.UnescapeDataString(argument[prefix.Length..]));
+        if (!action.RootElement.TryGetProperty("kind", out var kind) || kind.GetString() is not ("new-chat" or "chat"))
+            throw new ArgumentException("Unsupported native shell action.");
+        return argument;
+    }
+
+    private static int RunNativeShellAction(string encoded)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        var argument = DecodeNativeShellAction(encoded);
+        var result = Launch(requireControlled: true);
+        if (result != 0) return result;
+        var package = FindCodexPackage();
+        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", argument, ActivateOptions.None, out _), "activate native chat destination");
+        return 0;
     }
 
     private static int LaunchWindows()
@@ -217,7 +279,9 @@ internal static class Program
             var package = FindCodexPackage();
             await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), invoke: false);
         }
-        Console.WriteLine(JsonSerializer.Serialize(new { mode = ReadWindowsCodexLaunchMode().ToString(), tray = showHidden ? await WindowsTrayQuit.InspectHiddenAsync() : WindowsTrayQuit.Inspect() }));
+        var native = WindowsNativeJumpList.Read();
+        Console.WriteLine(JsonSerializer.Serialize(new { mode = ReadWindowsCodexLaunchMode().ToString(), tray = showHidden ? await WindowsTrayQuit.InspectHiddenAsync() : WindowsTrayQuit.Inspect(),
+            jumpList = new { appId = WindowsTaskbarIdentity.AppId, claudexTasks = WindowsJumpList.Entries.Length, nativeTasks = native?.Links.Count(link => !link.RecentChat) ?? 0, recentChats = native?.Links.Count(link => link.RecentChat) ?? 0 } }));
         return 0;
     }
 
@@ -429,7 +493,7 @@ internal static class Program
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
         var shortcutPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Codex (controlled).lnk");
         var package = FindCodexPackage();
-        var appId = $"{package.FamilyName}!App";
+        var appId = WindowsTaskbarIdentity.AppId;
         var iconPath = Path.Combine(AppContext.BaseDirectory, "claudex.ico");
         if (!File.Exists(iconPath)) throw new FileNotFoundException("Keep claudex.ico next to the published executable before installing the shortcut.", iconPath);
         var shellType = Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("Windows shortcut support is unavailable.");
@@ -442,7 +506,7 @@ internal static class Program
         shortcut.Description = "Launch Codex with the local development control endpoint";
         shortcut.Save();
         WindowsShortcut.SetAppId(shortcutPath, appId);
-        WindowsJumpList.Install(appId, executable, iconPath);
+        WindowsJumpList.Install(appId, executable, iconPath, WindowsNativeJumpList.Read());
         Console.WriteLine($"Created {shortcutPath}");
         Console.WriteLine($"AppUserModelID: {appId}");
         Console.WriteLine("Installed taskbar tasks: Open Claudex, Open vanilla Codex, Restart Claudex, Quit Claudex.");
@@ -450,24 +514,40 @@ internal static class Program
         return 0;
     }
 
-    internal static void RestoreWindowsTaskbarActions()
+    internal static Action RestoreWindowsTaskbarActions()
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows()) return () => { };
         try
         {
             var package = FindCodexPackage();
             var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve taskbar launcher.");
             var icon = Path.Combine(AppContext.BaseDirectory, "claudex.ico");
             if (!File.Exists(icon)) throw new FileNotFoundException("Taskbar icon is missing.", icon);
-            WindowsJumpList.Install($"{package.FamilyName}!App", executable, icon);
+            var native = WindowsNativeJumpList.Read();
+            WindowsJumpList.Install(WindowsTaskbarIdentity.AppId, executable, icon, native);
+            Console.WriteLine($"Installed combined Jump List: {WindowsJumpList.Entries.Length} Claudex actions, {native?.Links.Count(link => !link.RecentChat) ?? 0} native tasks, {native?.Links.Count(link => link.RecentChat) ?? 0} recent chats.");
+            WindowsTaskbarIdentity.Refresh(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), executable, icon);
             var failure = Path.Combine(StateDirectory, "taskbar-error.txt");
             if (File.Exists(failure)) File.Delete(failure);
+            return () =>
+            {
+                if (!OperatingSystem.IsWindows()) return;
+                WindowsTaskbarIdentity.Refresh(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), executable, icon);
+                var latest = WindowsNativeJumpList.Read();
+                if (latest != native)
+                {
+                    WindowsJumpList.Install(WindowsTaskbarIdentity.AppId, executable, icon, latest);
+                    native = latest;
+                    Console.WriteLine($"Refreshed native Jump List entries: {native?.Links.Length ?? 0}.");
+                }
+            };
         }
         catch (Exception exception)
         {
             Directory.CreateDirectory(StateDirectory);
             File.WriteAllText(Path.Combine(StateDirectory, "taskbar-error.txt"), exception.ToString());
             Console.Error.WriteLine($"Could not restore Claudex taskbar actions: {exception.Message}");
+            return () => { };
         }
     }
 
@@ -584,6 +664,7 @@ internal static class Program
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
+        WindowsNativeJumpListChecks.Run();
         MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();

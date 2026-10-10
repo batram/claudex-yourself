@@ -4,6 +4,7 @@ param(
     [string]$Launcher,
     [switch]$FinishTargetShutdown,
     [switch]$MockUpdate,
+    [switch]$MockVanillaActivation,
     [string]$ExpectedUserSid,
     [string]$FailurePath
 )
@@ -56,6 +57,10 @@ try {
             # WMI creates this process outside Codex's package/job lifetime. It must survive app quit.
             $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow=[uint16]0 }
             $workerArguments = if ($MockUpdate) { ' update-worker --mock-update' } else { ' update-worker' }
+            if ($MockVanillaActivation) {
+                if (-not $MockUpdate) { throw 'Mock vanilla activation requires a mock update.' }
+                $workerArguments += ' --mock-vanilla-activation'
+            }
             $created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine=('"' + $Launcher + '"' + $workerArguments); ProcessStartupInformation=$startup }
             if ($created.ReturnValue -ne 0) { throw "Could not detach updater (Win32_Process.Create returned $($created.ReturnValue))." }
             @{ processId=$created.ProcessId } | ConvertTo-Json -Compress

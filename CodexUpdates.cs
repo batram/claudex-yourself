@@ -36,6 +36,7 @@ internal static class CodexUpdates
             "status" => await ReadStatusAsync(),
             "install" => await ScheduleAsync(),
             "restart-test" => await ScheduleAsync(mockUpdate: true),
+            "restart-test-vanilla" => await ScheduleAsync(mockUpdate: true, mockVanillaActivation: true),
             _ => throw new ArgumentException("update requires check, prepare, status, install, or restart-test.")
         };
         Console.WriteLine(JsonSerializer.Serialize(result, Json));
@@ -251,9 +252,10 @@ internal static class CodexUpdates
         catch (Exception exception) { await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message); throw; }
     }
 
-    public static async Task<object> ScheduleAsync(bool mockUpdate = false)
+    public static async Task<object> ScheduleAsync(bool mockUpdate = false, bool mockVanillaActivation = false)
     {
         RequireWindows();
+        if (mockVanillaActivation && !mockUpdate) throw new ArgumentException("Mock vanilla activation requires a mock update.");
         // A normal quit and verified exit are required before any installation/recovery attempt.
         var readiness = await RendererDevTools.EvaluateStringAsync("JSON.stringify({ready:typeof window.electronBridge?.sendMessageFromView==='function'})", TimeSpan.FromSeconds(5));
         if (!JsonDocument.Parse(readiness).RootElement.GetProperty("ready").GetBoolean())
@@ -261,15 +263,19 @@ internal static class CodexUpdates
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate updater executable.");
         if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Use the published claudex-yourself executable to schedule updates.");
-        var response = await WindowsAsync("detach", mockUpdate ? ["-Launcher", executable, "-MockUpdate"] : ["-Launcher", executable]);
+        var arguments = new List<string> { "-Launcher", executable };
+        if (mockUpdate) arguments.Add("-MockUpdate");
+        if (mockVanillaActivation) arguments.Add("-MockVanillaActivation");
+        var response = await WindowsAsync("detach", arguments.ToArray());
         return new { state = "scheduled", worker = JsonSerializer.Deserialize<JsonElement>(response), message = mockUpdate
             ? "The mock update test will quit Codex normally and relaunch in controlled mode. No package will be downloaded or installed."
             : "The updater will download and validate the package, quit Codex normally, install after exit, and relaunch in controlled mode." };
     }
 
-    public static async Task<int> RunWorkerAsync(bool mockUpdate = false)
+    public static async Task<int> RunWorkerAsync(bool mockUpdate = false, bool mockVanillaActivation = false)
     {
         RequireWindows();
+        if (mockVanillaActivation && !mockUpdate) throw new ArgumentException("Mock vanilla activation requires a mock update.");
         Directory.CreateDirectory(Root);
         // Held by a file handle, so all awaits are safe and a crash automatically releases it.
         using var operationLock = TryLock("install.lock");
@@ -312,6 +318,11 @@ internal static class CodexUpdates
                 throw new InvalidOperationException($"Windows did not complete registration: expected {target}, found {installed.Version}, status {installed.Status}.");
             await SetStatusAsync("restarting", mockUpdate ? $"Mock update restart test: reopening unchanged Codex {installed.Version} in controlled mode." : $"Installed Codex {installed.Version}. Restarting in controlled mode.", target);
             restarting = true;
+            if (mockVanillaActivation)
+            {
+                if (!mockUpdate) throw new InvalidOperationException("Mock vanilla activation requires a mock update.");
+                await Program.ActivateVanillaForRestartTestAsync();
+            }
             var launched = Program.Launch(requireControlled: true);
             if (launched != 0) throw new InvalidOperationException("Update installed but controlled relaunch failed.");
             await SetStatusAsync("completed", mockUpdate ? $"Mock update restart test completed: Codex {installed.Version} exited and relaunched in controlled mode. No package was downloaded or installed." : $"Updated to Codex {installed.Version} and relaunched in controlled mode.", target);
@@ -734,7 +745,8 @@ internal static class CodexUpdates
         }
         using var watcherLock = acquired;
         if (watcherLock is null) return 0;
-        Program.RestoreWindowsTaskbarActions();
+        var refreshTaskbarWindows = Program.RestoreWindowsTaskbarActions();
+        var nextTaskbarRefresh = DateTime.UtcNow.AddSeconds(2);
         var source = await File.ReadAllTextAsync(Path.Combine(Program.BundledScriptDirectory, "codex_updates.js"));
         var nextCheck = DateTime.MinValue;
         UpdateCheck? check = null;
@@ -744,6 +756,12 @@ internal static class CodexUpdates
         var missed = 0;
         while (missed < 30)
         {
+            if (DateTime.UtcNow >= nextTaskbarRefresh)
+            {
+                try { refreshTaskbarWindows(); }
+                catch (Exception exception) { Console.Error.WriteLine($"Could not refresh Claudex taskbar window identity: {exception}"); }
+                nextTaskbarRefresh = DateTime.UtcNow.AddSeconds(2);
+            }
             try
             {
                 var action = await RendererDevTools.EvaluateStringAsync("JSON.stringify(window[Symbol.for('claudex-yourself.codex-updates')]?.takeAction() ?? 'missing')", TimeSpan.FromSeconds(3));
