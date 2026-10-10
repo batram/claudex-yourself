@@ -37,6 +37,7 @@ internal static class Program
                     ? await PrintTaskbarStatusAsync(arguments.Contains("--show-hidden"), arguments.Contains("--check-exit"))
                     : Fail("taskbar-status requires Windows."),
                 "native-shell" => arguments.Length == 2 ? RunNativeShellAction(arguments[1]) : Fail("native-shell requires an encoded native action."),
+                "session-shell" => arguments.Length == 2 ? RunSessionShellAction(arguments[1]) : Fail("session-shell requires an encoded Codex session."),
                 "reload" => await RunNamedScriptAsync("reload-dgspy", concise: true),
                 "run" => arguments.Length < 2 ? Fail("run requires a script name or path.") : await RunNamedScriptAsync(arguments[1], concise: false),
                 "run-all" => await RunAllAsync(),
@@ -160,6 +161,18 @@ internal static class Program
         return 0;
     }
 
+    private static int RunSessionShellAction(string encoded)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        var uri = WindowsRecentChats.DecodeSessionAction(encoded);
+        var result = Launch(requireControlled: true);
+        if (result != 0) return result;
+        var package = FindCodexPackage();
+        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+        ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", uri, ActivateOptions.None, out _), "activate Codex session destination");
+        return 0;
+    }
+
     private static int LaunchWindows()
     {
         var package = FindCodexPackage();
@@ -280,8 +293,11 @@ internal static class Program
             await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), invoke: false);
         }
         var native = WindowsNativeJumpList.Read();
+        var historyPath = Path.Combine(StateDirectory, "taskbar-history.json");
+        JsonElement? historyStatus = File.Exists(historyPath) ? JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(historyPath)) : null;
         Console.WriteLine(JsonSerializer.Serialize(new { mode = ReadWindowsCodexLaunchMode().ToString(), tray = showHidden ? await WindowsTrayQuit.InspectHiddenAsync() : WindowsTrayQuit.Inspect(),
-            jumpList = new { appId = WindowsTaskbarIdentity.AppId, claudexTasks = WindowsJumpList.Entries.Length, nativeTasks = native?.Links.Count(link => !link.RecentChat) ?? 0, recentChats = native?.Links.Count(link => link.RecentChat) ?? 0 } }));
+            jumpList = new { appId = WindowsTaskbarIdentity.AppId, claudexTasks = WindowsJumpList.Entries.Length, nativeTasks = native?.Links.Count(link => !link.RecentChat) ?? 0,
+                recentChats = historyStatus?.GetProperty("entries").GetArrayLength() ?? native?.Links.Count(link => link.RecentChat) ?? 0, history = historyStatus } }));
         return 0;
     }
 
@@ -506,7 +522,10 @@ internal static class Program
         shortcut.Description = "Launch Codex with the local development control endpoint";
         shortcut.Save();
         WindowsShortcut.SetAppId(shortcutPath, appId);
-        WindowsJumpList.Install(appId, executable, iconPath, WindowsNativeJumpList.Read());
+        WindowsRecentChats.Entry[]? history = null;
+        try { history = WindowsRecentChats.ReadAsync().GetAwaiter().GetResult().Entries; }
+        catch (Exception exception) { Console.Error.WriteLine($"Live Jump List history is unavailable: {exception.Message}"); }
+        WindowsJumpList.Install(appId, executable, iconPath, WindowsNativeJumpList.Read(), history);
         Console.WriteLine($"Created {shortcutPath}");
         Console.WriteLine($"AppUserModelID: {appId}");
         Console.WriteLine("Installed taskbar tasks: Open Claudex, Open vanilla Codex, Restart Claudex, Quit Claudex.");
@@ -529,16 +548,43 @@ internal static class Program
             WindowsTaskbarIdentity.Refresh(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), executable, icon);
             var failure = Path.Combine(StateDirectory, "taskbar-error.txt");
             if (File.Exists(failure)) File.Delete(failure);
+            Task<WindowsRecentChats.Snapshot>? historyRead = WindowsRecentChats.ReadAsync();
+            WindowsRecentChats.Entry[]? history = null;
+            var pendingInstall = false;
+            var nextHistoryRead = DateTime.UtcNow.AddSeconds(15);
             return () =>
             {
                 if (!OperatingSystem.IsWindows()) return;
                 WindowsTaskbarIdentity.Refresh(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"), executable, icon);
                 var latest = WindowsNativeJumpList.Read();
-                if (latest != native)
+                var changed = latest != native || pendingInstall;
+                if (historyRead is { IsCompleted: true })
                 {
-                    WindowsJumpList.Install(WindowsTaskbarIdentity.AppId, executable, icon, latest);
+                    try
+                    {
+                        var snapshot = historyRead.GetAwaiter().GetResult();
+                        changed |= history is null || !history.SequenceEqual(snapshot.Entries);
+                        history = snapshot.Entries;
+                        WindowsRecentChats.WriteStatus(history, snapshot.Errors);
+                        if (snapshot.Errors.Length > 0) Console.Error.WriteLine("Jump List history incomplete: " + string.Join("; ", snapshot.Errors));
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine($"Could not read Jump List history: {exception.Message}");
+                        WindowsRecentChats.WriteStatus(history ?? [], [exception.Message]);
+                    }
+                    historyRead = null;
+                    nextHistoryRead = DateTime.UtcNow.AddSeconds(15);
+                }
+                if (historyRead is null && DateTime.UtcNow >= nextHistoryRead)
+                    historyRead = WindowsRecentChats.ReadAsync();
+                if (changed)
+                {
+                    pendingInstall = true;
+                    WindowsJumpList.Install(WindowsTaskbarIdentity.AppId, executable, icon, latest, history);
                     native = latest;
-                    Console.WriteLine($"Refreshed native Jump List entries: {native?.Links.Length ?? 0}.");
+                    pendingInstall = false;
+                    Console.WriteLine($"Refreshed Jump List: {history?.Length ?? native?.Links.Count(link => link.RecentChat) ?? 0} recent chats.");
                 }
             };
         }
@@ -665,6 +711,7 @@ internal static class Program
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
         WindowsNativeJumpListChecks.Run();
+        WindowsRecentChatsChecks.Run();
         MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
         if (OperatingSystem.IsMacOS()) MacLauncherChecks.Run();
         if (OperatingSystem.IsLinux()) LinuxLauncherChecks.Run();

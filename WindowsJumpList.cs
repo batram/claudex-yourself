@@ -7,7 +7,7 @@ namespace ClaudexYourself;
 [SupportedOSPlatform("windows")]
 internal static class WindowsJumpList
 {
-    internal static void Install(string appId, string executable, string icon, WindowsNativeJumpList.Snapshot? native = null)
+    internal static void Install(string appId, string executable, string icon, WindowsNativeJumpList.Snapshot? native = null, WindowsRecentChats.Entry[]? recentChats = null)
     {
         var list = (ICustomDestinationList)Create("77F10CF0-3DB5-4966-B520-B7C54FD35ED6");
         var tasks = (IObjectCollection)Create("2D3468C1-36A7-43B6-AC24-D3F02FD9607A");
@@ -33,6 +33,7 @@ internal static class WindowsJumpList
             }
             foreach (var entry in native?.Links ?? [])
             {
+                if (entry.RecentChat && recentChats is not null) continue;
                 var link = Create("00021401-0000-0000-C000-000000000046");
                 nativeLinks.Add(link);
                 var stream = SHCreateMemStream(entry.Bytes, (uint)entry.Bytes.Length)
@@ -56,6 +57,19 @@ internal static class WindowsJumpList
                 WindowsShortcut.SetStringProperty(routed, titleFormat, 2, title);
                 Check((entry.RecentChat ? chats : tasks).AddObject(routed));
             }
+            foreach (var entry in recentChats ?? [])
+            {
+                var link = (IShellLink)Create("00021401-0000-0000-C000-000000000046");
+                taskLinks.Add(link);
+                Check(link.SetPath(executable));
+                Check(link.SetArguments(entry.Arguments));
+                Check(link.SetWorkingDirectory(Path.GetDirectoryName(executable)!));
+                Check(link.SetIconLocation(icon, 0));
+                Check(link.SetShowCmd(0));
+                Check(link.SetDescription(entry.Title));
+                WindowsShortcut.SetStringProperty(link, new Guid("F29F85E0-4FF9-1068-AB91-08002B27B3D9"), 2, entry.Title);
+                Check(chats.AddObject(link));
+            }
             Check(list.SetAppID(appId));
             var arrayId = typeof(IObjectArray).GUID;
             Check(list.BeginList(out _, ref arrayId, out removed));
@@ -68,9 +82,8 @@ internal static class WindowsJumpList
                 try { if (IsRemoved(candidate, (IObjectArray)removed)) Check(chats.RemoveObjectAt((uint)index)); }
                 finally { Marshal.ReleaseComObject(candidate); }
             }
-            // Preserve Windows' automatic Recent category when the user permits history.
-            var recent = list.AppendKnownCategory(2);
-            if (recent != unchecked((int)0x80070005)) Check(recent);
+            // The explicit category is globally ranked; an automatic Recent
+            // category would reintroduce duplicates and a second ordering.
             Check(chats.GetCount(out var chatCount));
             if (chatCount > 0)
             {
@@ -129,7 +142,17 @@ internal static class WindowsJumpList
                 try
                 {
                     if (SHGetIDListFromObject(item, out var removedId) < 0) continue;
-                    try { if (ILIsEqual(candidateId, removedId)) return true; }
+                    try
+                    {
+                        if (ILIsEqual(candidateId, removedId) && item is IShellLink removedLink)
+                        {
+                            var candidateArguments = new StringBuilder(8192);
+                            var removedArguments = new StringBuilder(8192);
+                            Check(((IShellLink)candidate).GetArguments(candidateArguments, candidateArguments.Capacity));
+                            Check(removedLink.GetArguments(removedArguments, removedArguments.Capacity));
+                            if (candidateArguments.ToString() == removedArguments.ToString()) return true;
+                        }
+                    }
                     finally { Marshal.FreeCoTaskMem(removedId); }
                 }
                 finally { Marshal.ReleaseComObject(item); }
