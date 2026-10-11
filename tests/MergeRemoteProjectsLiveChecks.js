@@ -48,26 +48,35 @@ async function checkPagination() {
     if (wasCollapsed) heading.click();
     if (wasExpanded) more.click();
     check(visible() === 5, "Preview contains five sessions");
-    const iconPositions = rows().filter(row => !row.hidden).map(row => {
-      const icon = row.querySelector("svg.icon-2xs.no-drag") || row.querySelector("[aria-label='Remote session'] svg");
-      check(icon, "Each remote row has a device icon slot");
-      const box = row.getBoundingClientRect(), glyph = icon.getBoundingClientRect();
-      check(Math.abs(glyph.y + glyph.height / 2 - box.y - box.height / 2) < 1,
-        "Device icon is vertically centered");
-      return box.right - glyph.right;
-    });
-    check(Math.max(...iconPositions) - Math.min(...iconPositions) < 1,
-      "Copied, compact, and status-bearing rows share a device icon column");
+    const checkIconColumn = () => {
+      const iconPositions = rows().filter(row => !row.hidden).map(row => {
+        const icon = row.querySelector("svg.icon-2xs.no-drag") || row.querySelector("[aria-label='Remote session'] svg");
+        check(icon, "Each remote row has a device icon slot");
+        const box = row.getBoundingClientRect(), glyph = icon.getBoundingClientRect();
+        check(Math.abs(glyph.y + glyph.height / 2 - box.y - box.height / 2) < 1,
+          "Device icon is vertically centered");
+        return box.right - glyph.right;
+      });
+      check(Math.max(...iconPositions) - Math.min(...iconPositions) < 1,
+        "Copied, compact, and status-bearing rows share a device icon column");
+      for (const slot of panel.querySelectorAll(".claudex-merged-device-slot")) {
+        check(parseFloat(getComputedStyle(slot).marginInlineEnd) > 0,
+          "Userscript-owned slot margin is present without a generated utility class");
+      }
+    };
+    checkIconColumn();
     more.focus();
     more.click();
     for (let index = 0; index < 3; index++) controller.refresh();
     check(visible() === total, "Show more reveals the full catalog");
+    checkIconColumn();
     check(panel.querySelector(".claudex-merged-remote-more") === more, "Refresh preserves button identity");
     check(document.activeElement === more, "Refresh preserves pagination focus");
     check(foreignClicks === 0, "No native project's Show more was clicked");
     more.click();
     controller.refresh();
     check(visible() === 5, "Show less restores the preview");
+    checkIconColumn();
     check(rows().length === total && !more.hidden, "Sessions and Show more remain available");
     const mountedRemoteRows = [...document.querySelectorAll("[data-app-action-sidebar-thread-row]")]
       .filter(row => row.dataset.appActionSidebarThreadHostId?.startsWith("remote"));
