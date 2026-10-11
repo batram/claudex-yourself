@@ -7,6 +7,15 @@ async function checkPagination() {
   const controller = window[Symbol.for("claudex-yourself.merge-remote-projects")];
   const check = (condition, message) => { if (!condition) throw new Error(message); };
   check(controller?.installed, "Merge remote projects is installed");
+  const native = document.querySelector("[data-app-action-sidebar-thread-row]");
+  const compact = document.querySelector(".claudex-merged-catalog-row");
+  check(native && compact, "Native and compact rows are available for style comparison");
+  for (const property of ["fontSize", "fontFamily", "fontWeight", "lineHeight", "height", "padding", "color", "backgroundColor"]) {
+    check(getComputedStyle(compact)[property] === getComputedStyle(native)[property],
+      `Compact row matches native ${property}`);
+  }
+  check(getComputedStyle(compact.querySelector(".claudex-merged-catalog-title")).lineHeight ===
+    getComputedStyle(native.querySelector("div")).lineHeight, "Compact title matches native line height");
   const panel = [...document.querySelectorAll(".claudex-merged-remote")].find(element =>
     element.parentElement.getAttribute("aria-label") === "once");
   check(panel, "The once project has a remote panel");
@@ -42,7 +51,7 @@ async function checkPagination() {
     const mountedRemoteRows = [...document.querySelectorAll("[data-app-action-sidebar-thread-row]")]
       .filter(row => row.dataset.appActionSidebarThreadHostId?.startsWith("remote"));
     check(total > mountedRemoteRows.length, "The catalog includes sessions outside mounted Recents rows");
-    return { total, preview: visible(), mountedRemoteRows: mountedRemoteRows.length, foreignClicks };
+    return { total, preview: visible(), mountedRemoteRows: mountedRemoteRows.length, foreignClicks, nativeStylesMatch: true };
   } finally {
     if ((more.getAttribute("aria-expanded") === "true") !== wasExpanded) more.click();
     if ((heading.getAttribute("aria-expanded") === "false") !== wasCollapsed) heading.click();

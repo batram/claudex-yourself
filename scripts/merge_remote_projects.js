@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.3.0
+// @version       1.3.2
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -129,6 +129,7 @@ let observer, timer, style;
 let lastStatus = { projects: 0, sessions: 0, hiddenRemoteProjects: 0 };
 const panels = new Map();
 const hidden = new Set();
+const hostIcons = new Map();
 const observe = () => observer?.observe(document.body, {
   childList: true, subtree: true, characterData: true, attributes: true,
   attributeFilter: ["data-app-action-sidebar-project-collapsed", "data-app-action-sidebar-thread-active", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-thread-selected", "class"]
@@ -179,13 +180,16 @@ const makeCatalogRow = session => {
   const row = document.createElement("button");
   row.type = "button";
   row.dataset.claudexMergedRemote = "row";
-  row.className = "claudex-merged-catalog-row sidebar-item";
+  row.className = "claudex-merged-catalog-row sidebar-item group relative flex items-center gap-2 w-full cursor-interaction text-sm hover:bg-primary-ghost-hover h-[var(--height-token-row)] py-row-y pe-row-y ps-[var(--padding-row-cell-x,var(--padding-row-x))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring";
   row.title = `${session.title}\nRemote: ${session.hostId}\n${session.cwd || ""}`;
   const title = document.createElement("span");
-  title.className = "claudex-merged-catalog-title";
+  title.className = "claudex-merged-catalog-title leading-4";
   title.textContent = session.title;
   const icon = document.createElement("span");
-  icon.innerHTML = '<svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
+  icon.className = "inline-flex shrink-0 text-tertiary";
+  const nativeIcon = hostIcons.get(session.hostId);
+  if (nativeIcon) icon.append(nativeIcon.cloneNode(true));
+  else icon.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
   icon.setAttribute("aria-label", "Remote session");
   row.append(title, icon);
   row.addEventListener("click", event => {
@@ -210,7 +214,11 @@ const refresh = () => {
     if (!nativeCatalog) return;
     const buckets = new Map(), mounted = new Map();
     for (const row of sidebar?.querySelectorAll(threadSelector) || []) {
-      if (!row.closest(ownedSelector)) mounted.set(threadKey(row), row);
+      if (!row.closest(ownedSelector)) {
+        mounted.set(threadKey(row), row);
+        const icon = row.querySelector("svg.icon-2xs.no-drag");
+        if (icon) hostIcons.set(row.dataset.appActionSidebarThreadHostId, icon.cloneNode(true));
+      }
     }
     for (const session of nativeCatalog.read()) {
       if (!session.hostId || session.hostId === "local" || session.hostId === "durable" || session.workspaceKind === "projectless") continue;
@@ -239,7 +247,8 @@ const refresh = () => {
         element.className = "claudex-merged-remote";
         const toggle = document.createElement("button");
         toggle.type = "button";
-        toggle.className = "claudex-merged-remote-label";
+        toggle.className = "claudex-merged-remote-label hover:bg-primary-ghost-hover";
+        toggle.innerHTML = '<svg class="claudex-remote-chevron" aria-hidden="true" width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m6 3 5 5-5 5"/></svg><svg aria-hidden="true" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg><span class="claudex-remote-heading-text"></span>';
         const body = document.createElement("div");
         body.id = `claudex-remote-${encodeURIComponent(local.projectId)}`;
         body.className = "claudex-merged-remote-entries";
@@ -270,7 +279,7 @@ const refresh = () => {
       panel.element.hidden = local.row.dataset.appActionSidebarProjectCollapsed === "true";
       panel.body.hidden = collapsed[local.projectId] === true;
       panel.toggle.setAttribute("aria-expanded", String(!panel.body.hidden));
-      panel.toggle.textContent = `Remote (${entries.length})`;
+      panel.toggle.querySelector(".claudex-remote-heading-text").textContent = `Remote (${entries.length})`;
       const signature = entries.map(entry => `${entry.key}:${entry.row?.outerHTML || entry.session.title}`).join("\n");
       const sourcesChanged = !panel.sources || entries.some((entry, index) => panel.sources[index] !== entry.row);
       if (signature !== panel.signature || sourcesChanged) {
@@ -316,8 +325,11 @@ const install = async () => {
   // order keeps Remote after them regardless of React's DOM insertion order.
   style.textContent = "[data-claudex-merged-hidden]{display:none!important}.claudex-merged-remote[hidden],.claudex-merged-remote-entries[hidden]{display:none!important}.claudex-merged-remote{order:1;padding-inline-start:24px}.claudex-merged-remote-label{display:flex;align-items:center;gap:5px;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font-size:11px;opacity:.65;padding:5px 8px 2px}.claudex-merged-remote-label:hover{opacity:1}.claudex-merged-remote-label:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}.claudex-merged-remote-label:before{content:'>';display:inline-block;transition:transform .12s}.claudex-merged-remote-label[aria-expanded=true]:before{transform:rotate(90deg)}.claudex-merged-remote [data-claudex-merged-remote=row]{content-visibility:visible}";
   document.head.append(style);
+  style.textContent += ".claudex-merged-remote-label{margin-inline-start:-12px;width:calc(100% + 12px);padding:6px 8px;gap:6px;border-radius:6px;font-size:12px;font-weight:500;color:var(--color-text-secondary,inherit);opacity:1}.claudex-merged-remote-label:before{content:none}.claudex-remote-chevron{flex:none;opacity:.6;transition:transform .12s}.claudex-merged-remote-label[aria-expanded=true] .claudex-remote-chevron{transform:rotate(90deg)}";
   style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row][hidden],.claudex-merged-remote-more[hidden]{display:none!important}.claudex-merged-remote-more{display:block;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit;opacity:.55;padding:5px 8px}.claudex-merged-remote-more:hover{opacity:1}.claudex-merged-remote-more:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}";
-  style.textContent += ".claudex-merged-catalog-row{display:flex;align-items:center;gap:8px;width:100%;height:var(--height-token-row,30px);padding:0 8px;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit}.claudex-merged-catalog-row:hover{background:var(--color-background-primary-ghost-hover,rgba(128,128,128,.12))}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.claudex-merged-catalog-row:focus-visible{outline:2px solid currentColor;outline-offset:-2px}.claudex-merged-catalog-row>span:last-child{color:#64b8a6;font-size:11px}";
+  // Let native utilities supply typography, spacing, hover/focus and theme
+  // colors. Inheriting the container's font made fallback rows 16px vs 13px.
+  style.textContent += ".claudex-merged-catalog-row{border:0;text-align:start}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}";
   observer = new MutationObserver(schedule);
   try {
     if (!nativeCatalog) await loadNativeCatalog();
