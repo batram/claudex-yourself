@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.3.2
+// @version       1.4.0
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -94,16 +94,26 @@ const loadNativeCatalog = async () => {
     return args.length ? node.read(scope, chain, args[0]) : scope.store.get(node.resolve(scope, chain));
   };
   const keys = main[alias("Gtr")], list = main[alias("yF")];
-  const conversation = imported("mc"), router = imported("Nf");
+  const conversation = imported("mc"), router = imported("Nf"), location = imported("Jg");
   nativeCatalog = {
     read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
       const summary = item.summary || get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId })?.summary;
       return { ...item, summary, title: summary?.title || item.conversationId };
     }),
-    navigate: (id, hostId) => get(router).navigate(`/local/${encodeURIComponent(id)}?hostId=${encodeURIComponent(hostId)}`),
+    navigate: (id, hostId, projectId) => get(router).navigate(`/local/${encodeURIComponent(id)}?hostId=${encodeURIComponent(hostId)}`, {
+      state: { ...get(location)?.state, sidebarThreadLocationId: `unified-project:${projectId}` }
+    }),
+    active: () => {
+      const current = get(location);
+      return { id: current?.pathname?.match(/^\/local\/([^/]+)/)?.[1],
+        hostId: new URLSearchParams(current?.search || "").get("hostId") || "local" };
+    },
     subscribe: () => {
       const scope = chain.get(keys.scope.id);
-      return scope.store.sub(keys.resolve(scope, chain), schedule);
+      const offKeys = scope.store.sub(keys.resolve(scope, chain), schedule);
+      const locationScope = chain.get(location.scope.id);
+      const offLocation = locationScope.store.sub(location.resolve(locationScope, chain), schedule);
+      return () => { offKeys(); offLocation(); };
     }
   };
 };
@@ -121,7 +131,8 @@ const updateLimit = (panel, projectId) => {
   const showAll = expanded[projectId] === true;
   rows.forEach((row, index) => { row.hidden = !showAll && index >= previewCount; });
   panel.more.hidden = panel.body.hidden || rows.length <= previewCount;
-  panel.more.textContent = showAll ? "Show less" : "Show more";
+  panel.moreLabel.textContent = showAll ? "Show less" : "Show more";
+  panel.moreContainer.hidden = panel.more.hidden;
   panel.more.setAttribute("aria-expanded", String(showAll));
   panel.more.setAttribute("aria-label", showAll ? "Show fewer remote chats" : `Show all ${rows.length} remote chats`);
 };
@@ -135,9 +146,11 @@ const observe = () => observer?.observe(document.body, {
   attributeFilter: ["data-app-action-sidebar-project-collapsed", "data-app-action-sidebar-thread-active", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-thread-selected", "class"]
 });
 const removePanel = (id, panel) => { panel.element.remove(); panels.delete(id); };
-const makeCopy = (source, session) => {
+const makeCopy = (source, session, projectId) => {
   const copy = source.cloneNode(true);
   copy.dataset.claudexMergedRemote = "row";
+  copy.dataset.claudexSessionId = session.conversationId;
+  copy.dataset.claudexHostId = session.hostId;
   // Cloned native DOM must not masquerade as a second native sidebar/drop target.
   for (const element of [copy, ...copy.querySelectorAll("*")]) {
     for (const attribute of [...element.attributes]) {
@@ -153,8 +166,12 @@ const makeCopy = (source, session) => {
   // multi-selection, and context menu handlers with the original host identity.
   for (const type of ["click", "dblclick", "contextmenu"]) copy.addEventListener(type, event => {
     event.preventDefault(); event.stopPropagation();
+    if (type === "click" && !event.target.closest("button") && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+      return;
+    }
     if (!source.isConnected) {
-      if (type === "click" && !event.target.closest("button")) nativeCatalog.navigate(session.conversationId, session.hostId);
+      if (type === "click" && !event.target.closest("button")) nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
       schedule(); return;
     }
     const indices = [];
@@ -176,10 +193,12 @@ const makeCopy = (source, session) => {
   });
   return copy;
 };
-const makeCatalogRow = session => {
+const makeCatalogRow = (session, projectId) => {
   const row = document.createElement("button");
   row.type = "button";
   row.dataset.claudexMergedRemote = "row";
+  row.dataset.claudexSessionId = session.conversationId;
+  row.dataset.claudexHostId = session.hostId;
   row.className = "claudex-merged-catalog-row sidebar-item group relative flex items-center gap-2 w-full cursor-interaction text-sm hover:bg-primary-ghost-hover h-[var(--height-token-row)] py-row-y pe-row-y ps-[var(--padding-row-cell-x,var(--padding-row-x))] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring";
   row.title = `${session.title}\nRemote: ${session.hostId}\n${session.cwd || ""}`;
   const title = document.createElement("span");
@@ -194,7 +213,7 @@ const makeCatalogRow = session => {
   row.append(title, icon);
   row.addEventListener("click", event => {
     event.preventDefault(); event.stopPropagation();
-    nativeCatalog.navigate(session.conversationId, session.hostId);
+    nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
   });
   return row;
 };
@@ -252,9 +271,16 @@ const refresh = () => {
         const body = document.createElement("div");
         body.id = `claudex-remote-${encodeURIComponent(local.projectId)}`;
         body.className = "claudex-merged-remote-entries";
-        const more = document.createElement("button");
+        const nativeMore = [...document.querySelectorAll("[data-app-action-sidebar-scroll] button")]
+          .find(button => !button.closest(ownedSelector) && /^(Show more|Show less)$/.test(button.textContent.trim()));
+        const more = nativeMore ? nativeMore.cloneNode(true) : document.createElement("button");
         more.type = "button";
-        more.className = "claudex-merged-remote-more";
+        more.classList.add("claudex-merged-remote-more");
+        if (!nativeMore) more.classList.add("text-sm", "text-tertiary");
+        const moreLabel = more.querySelector(".text-base") || more;
+        const moreContainer = document.createElement("div");
+        moreContainer.className = "claudex-merged-remote-more-container flex gap-1 py-1 ps-2";
+        moreContainer.append(more);
         more.setAttribute("aria-controls", body.id);
         more.addEventListener("click", event => {
           event.stopPropagation();
@@ -271,9 +297,9 @@ const refresh = () => {
           toggle.setAttribute("aria-expanded", String(!body.hidden));
           updateLimit(panels.get(local.projectId), local.projectId);
         });
-        element.append(toggle, body, more);
+        element.append(toggle, body, moreContainer);
         local.container.append(element);
-        panels.set(local.projectId, panel = { element, toggle, body, more, signature: "" });
+        panels.set(local.projectId, panel = { element, toggle, body, more, moreLabel, moreContainer, signature: "" });
       }
       if (panel.element.parentElement !== local.container) local.container.append(panel.element);
       panel.element.hidden = local.row.dataset.appActionSidebarProjectCollapsed === "true";
@@ -285,10 +311,18 @@ const refresh = () => {
       if (signature !== panel.signature || sourcesChanged) {
         // Keep the pagination button outside the replaceable list. Never remove
         // the clicked control or let it become a native sibling's click target.
-        panel.body.replaceChildren(...entries.map(entry => entry.row ? makeCopy(entry.row, entry.session) : makeCatalogRow(entry.session)));
+        panel.body.replaceChildren(...entries.map(entry => entry.row ? makeCopy(entry.row, entry.session, local.projectId) : makeCatalogRow(entry.session, local.projectId)));
         panel.signature = signature;
         panel.sources = entries.map(entry => entry.row);
       }
+      const active = nativeCatalog.active();
+      [...panel.body.children].forEach((row, index) => {
+        const session = entries[index]?.session;
+        const selected = session?.conversationId === active.id && session.hostId === active.hostId;
+        row.classList.toggle("bg-primary-ghost-hover", selected);
+        row.dataset.claudexMergedActive = String(selected);
+        if (selected) row.setAttribute("aria-current", "page"); else row.removeAttribute("aria-current");
+      });
       updateLimit(panel, local.projectId);
       sessions += entries.length;
     }
@@ -326,7 +360,7 @@ const install = async () => {
   style.textContent = "[data-claudex-merged-hidden]{display:none!important}.claudex-merged-remote[hidden],.claudex-merged-remote-entries[hidden]{display:none!important}.claudex-merged-remote{order:1;padding-inline-start:24px}.claudex-merged-remote-label{display:flex;align-items:center;gap:5px;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font-size:11px;opacity:.65;padding:5px 8px 2px}.claudex-merged-remote-label:hover{opacity:1}.claudex-merged-remote-label:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}.claudex-merged-remote-label:before{content:'>';display:inline-block;transition:transform .12s}.claudex-merged-remote-label[aria-expanded=true]:before{transform:rotate(90deg)}.claudex-merged-remote [data-claudex-merged-remote=row]{content-visibility:visible}";
   document.head.append(style);
   style.textContent += ".claudex-merged-remote-label{margin-inline-start:-12px;width:calc(100% + 12px);padding:6px 8px;gap:6px;border-radius:6px;font-size:12px;font-weight:500;color:var(--color-text-secondary,inherit);opacity:1}.claudex-merged-remote-label:before{content:none}.claudex-remote-chevron{flex:none;opacity:.6;transition:transform .12s}.claudex-merged-remote-label[aria-expanded=true] .claudex-remote-chevron{transform:rotate(90deg)}";
-  style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row][hidden],.claudex-merged-remote-more[hidden]{display:none!important}.claudex-merged-remote-more{display:block;width:100%;border:0;background:none;color:inherit;text-align:start;cursor:pointer;font:inherit;opacity:.55;padding:5px 8px}.claudex-merged-remote-more:hover{opacity:1}.claudex-merged-remote-more:focus-visible{outline:2px solid var(--color-text-info,currentColor);outline-offset:-2px}";
+  style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row][hidden],.claudex-merged-remote-more[hidden],.claudex-merged-remote-more-container[hidden]{display:none!important}";
   // Let native utilities supply typography, spacing, hover/focus and theme
   // colors. Inheriting the container's font made fallback rows 16px vs 13px.
   style.textContent += ".claudex-merged-catalog-row{border:0;text-align:start}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}";

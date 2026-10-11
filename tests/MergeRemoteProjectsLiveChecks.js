@@ -20,6 +20,17 @@ async function checkPagination() {
     element.parentElement.getAttribute("aria-label") === "once");
   check(panel, "The once project has a remote panel");
   const more = panel.querySelector(".claudex-merged-remote-more");
+  const nativeMore = [...panel.parentElement.querySelectorAll("button")].find(button =>
+    !button.closest(".claudex-merged-remote") && /^(Show more|Show less)$/.test(button.textContent.trim()));
+  check(nativeMore, "Native pagination button is available");
+  for (const property of ["fontSize", "fontFamily", "fontWeight", "lineHeight", "height", "padding", "color", "opacity"]) {
+    check(getComputedStyle(more)[property] === getComputedStyle(nativeMore)[property],
+      `Remote pagination matches native ${property}`);
+  }
+  check(getComputedStyle(more.querySelector(".text-base")).font ===
+    getComputedStyle(nativeMore.querySelector(".text-base")).font, "Pagination label matches native typography");
+  check(Math.abs(more.getBoundingClientRect().x - nativeMore.getBoundingClientRect().x) < 1,
+    "Remote pagination aligns horizontally with native pagination");
   const heading = panel.querySelector(".claudex-merged-remote-label");
   const rows = () => [...panel.querySelectorAll("[data-claudex-merged-remote=row]")];
   const visible = () => rows().filter(row => !row.hidden).length;
@@ -60,6 +71,54 @@ async function checkPagination() {
   }
 }
 
+async function checkNavigation() {
+  const check = (condition, message) => { if (!condition) throw new Error(message); };
+  const controller = window[Symbol.for("claudex-yourself.merge-remote-projects")];
+  const scroll = document.querySelector("[data-app-action-sidebar-scroll]");
+  const original = document.querySelector("[data-app-action-sidebar-thread-active=true]") ||
+    document.querySelector("[data-claudex-merged-active=true]");
+  check(original, "The current chat has a sidebar entry to return to");
+  const originalId = original.dataset.claudexSessionId || original.dataset.appActionSidebarThreadId;
+  const originalHost = original.dataset.claudexHostId || original.dataset.appActionSidebarThreadHostId;
+  const originalTop = scroll.scrollTop;
+  const panel = [...document.querySelectorAll(".claudex-merged-remote")].find(element =>
+    element.parentElement.getAttribute("aria-label") === "once");
+  const more = panel.querySelector(".claudex-merged-remote-more");
+  const heading = panel.querySelector(".claudex-merged-remote-label");
+  const collapsed = heading.getAttribute("aria-expanded") === "false";
+  const expanded = more.getAttribute("aria-expanded") === "true";
+  const settle = () => new Promise(resolve => setTimeout(resolve, 400));
+  try {
+    if (collapsed) heading.click();
+    if (!expanded) more.click();
+    for (const selector of ["[data-claudex-merged-remote=row]:not(.claudex-merged-catalog-row)", ".claudex-merged-catalog-row"]) {
+      const row = panel.querySelector(selector);
+      check(row, `Grouped navigation fixture is available: ${selector}`);
+      const id = row.dataset.claudexSessionId, host = row.dataset.claudexHostId;
+      row.scrollIntoView({ block: "center" });
+      const before = scroll.scrollTop;
+      row.click();
+      await settle();
+      controller.refresh();
+      check(Math.abs(scroll.scrollTop - before) < 1, "Grouped navigation preserves sidebar scroll");
+      check([...panel.querySelectorAll("[data-claudex-merged-active=true]")].some(element =>
+        element.dataset.claudexSessionId === id && element.dataset.claudexHostId === host &&
+        element.getAttribute("aria-current") === "page"), "Clicked grouped entry is highlighted");
+    }
+    return { copiedRowNavigation: true, compactRowNavigation: true, scrollPreserved: true };
+  } finally {
+    const candidates = [...document.querySelectorAll("[data-app-action-sidebar-thread-row],[data-claudex-merged-remote=row]")];
+    const back = candidates.find(element =>
+      (element.dataset.claudexSessionId || element.dataset.appActionSidebarThreadId) === originalId &&
+      (element.dataset.claudexHostId || element.dataset.appActionSidebarThreadHostId) === originalHost);
+    back?.click();
+    await settle();
+    if ((more.getAttribute("aria-expanded") === "true") !== expanded) more.click();
+    if ((heading.getAttribute("aria-expanded") === "false") !== collapsed) heading.click();
+    scroll.scrollTop = originalTop;
+  }
+}
+
 async function main() {
   const endpoint = process.env.CLAUDEX_CDP_URL || "http://127.0.0.1:9229";
   const targets = await (await fetch(`${endpoint}/json/list`)).json();
@@ -67,5 +126,7 @@ async function main() {
   assert(target, "A controlled main renderer is available");
   const result = await evaluate(target, `(${checkPagination.toString()})()`);
   console.log("Merge remote projects live checks passed:", JSON.stringify(result));
+  const navigation = await evaluate(target, `(${checkNavigation.toString()})()`);
+  console.log("Grouped navigation checks passed:", JSON.stringify(navigation));
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
