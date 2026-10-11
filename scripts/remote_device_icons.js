@@ -6,6 +6,7 @@
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
 // @codex-tested  26.1007.2314.0
+// @codex-tested  20156
 // @grant         none
 // ==/ClaudexUserScript==
 const scriptId = "remote_device_icons";
