@@ -42,6 +42,18 @@ The list reads Codex's loaded session catalog rather than counting mounted Recen
 
 Run `node tests/MergeRemoteProjectsChecks.js` for the focused matching checks. With the script installed and a controlled main renderer, `node tests/MergeRemoteProjectsLiveChecks.js` checks real pagination, native styling and horizontal alignment, stable button identity/focus, isolation from native Show more buttons, and catalog entries beyond mounted Recents rows. It also opens copied and compact grouped rows and verifies scroll preservation and active highlighting, then returns to the original chat and restores scroll and Remote expansion preferences. It expects a local `once` project with more than five remote sessions. Native rendering and event forwarding also need live verification after Codex upgrades.
 
+## Remote device icons
+
+Publish `scripts/remote_device_icons.js` and enable autoload. In **Claudex - User scripts**, the **Remote device icons** card provides one icon selector and an **Upload icon** file picker for each discovered remote device. This requires `userscript_settings` version 1.4.1 or later, which supports script-provided settings sections.
+
+The five self-contained SVG presets are **Apple**, **Linux penguin**, **Windows**, **Tiny UFO**, and **Debug duck**. **Automatic** selects an OS preset when a chat's working path identifies macOS, Linux, or Windows; an unknown OS keeps the native globe. **Default globe** restores the original icon for that device. Devices are keyed by their native host IDs, so two machines can have independent choices even if they run the same OS.
+
+Uploads accept PNG, JPEG, WebP, GIF, or SVG files up to 2 MB. The browser decodes the image and saves a 128-by-128 PNG copy in localStorage; animated images become a static frame. Choices and uploaded images stay in the current Codex profile and are applied to native session rows and the merged-project script's rows. Existing windows with this script loaded receive preference changes through the storage event. This does not upload files to a server or change remote machine settings.
+
+The script overlays the original native icon while preserving React's SVG node. Disabling it removes the overlays and restores the colored globes. The controls remain available while disabled. Settings sections use the optional controller method `renderSettings(container)`; the manager mounts the container in the script's card before invoking it, allowing the script to maintain its own controls without adding a hard-coded manager integration.
+
+Run `node tests/RemoteDeviceIconsChecks.js` for preset, OS inference, preference, and upload-validation checks. With a controlled main renderer and the userscript settings panel open, `node tests/RemoteDeviceIconsLiveChecks.js` exercises all presets, the actual file-input handler with a synthetic SVG, invalid-upload feedback, and uninstall/reinstall. It restores previous icon choices afterward. Test native platform compatibility behaviorally after Codex upgrades.
+
 ## URL sources and installation
 
 Each source is independent. A URL installed through the panel or MCP is remembered in `sources.json` beside `autoload.json`. A saved URL overrides the optional `@update-url` header. For per-user copies of the bundled settings, usage, hide-invite, hide-Mini, and Windows updater scripts, the source defaults to their canonical files on this repository's `master` branch. Other scripts need an explicit URL or `@update-url`. Version checks run on startup by default and never install automatically. Version comparison supports dotted numeric versions and prerelease ordering; equal versions and downgrades are not offered for installation, so authors must bump `@version` when changing source.

@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.0
+// @version       1.4.1
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -210,7 +210,10 @@ const makeCatalogRow = (session, projectId) => {
   if (nativeIcon) icon.append(nativeIcon.cloneNode(true));
   else icon.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
   icon.setAttribute("aria-label", "Remote session");
-  row.append(title, icon);
+  const iconSlot = document.createElement("span");
+  iconSlot.className = "flex h-5 min-w-5 items-center justify-center shrink-0 me-[3px]";
+  iconSlot.append(icon);
+  row.append(title, iconSlot);
   row.addEventListener("click", event => {
     event.preventDefault(); event.stopPropagation();
     nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
@@ -364,6 +367,9 @@ const install = async () => {
   // Let native utilities supply typography, spacing, hover/focus and theme
   // colors. Inheriting the container's font made fallback rows 16px vs 13px.
   style.textContent += ".claudex-merged-catalog-row{border:0;text-align:start}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}";
+  // Keep the host in a stable rightmost slot, even when a native status badge
+  // is present. CSS ordering preserves React's DOM and forwarded event paths.
+  style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row] [data-hover-card-open-immediately]>span:has([data-testid=task-row-environment-remote]){order:1}";
   observer = new MutationObserver(schedule);
   try {
     if (!nativeCatalog) await loadNativeCatalog();

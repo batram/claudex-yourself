@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.4.0
+// @version       1.4.1
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -12,6 +12,7 @@
 // @grant         none
 // @codex-tested  26.924.2738.0
 // @codex-tested  26.1002.6548.0
+// @codex-tested  26.1007.2314.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.userscript-settings");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
@@ -33,7 +34,7 @@ const platformName = navigator.userAgentData?.platform || navigator.platform || 
 const platform = /win/i.test(platformName) ? "windows" : /mac/i.test(platformName) ? "macos" : /linux/i.test(platformName) ? "linux" : "unknown";
 const getCatalog = () => [...catalog, ...[...registry.keys()].filter(id =>
   id !== "userscript_settings" && !catalog.some(script => script.id === id)
-).map(id => ({ id, name:registry.get(id)?.name || id, description:"Registered userscript." }))];
+).map(id => ({ id, name:registry.get(id)?.name || id, description:registry.get(id)?.description || "Registered userscript." }))];
 const scriptState = script => {
   const supported = !script.platforms || script.platforms.includes(platform);
   const controller = registry.get(script.id);
@@ -400,6 +401,12 @@ const renderSources = () => {
       usageOptions.append(sourceElement("h4","Show in sidebar"),sourceElement("div",undefined,"claudex-userscript-list"),sourceElement("p",undefined,"claudex-usage-options-empty claudex-muted"));
       body.append(usageOptions);
     }
+    const optionsController = registry.get(script.id);
+    if (typeof optionsController?.renderSettings === "function") {
+      const options = sourceElement("section");
+      body.append(options);
+      options.dataset.claudexControllerOptions = script.id;
+    }
     card.append(body);
     if (disk) {
       const footer = sourceElement("div",undefined,"claudex-card-footer");
@@ -415,6 +422,8 @@ const renderSources = () => {
       row.append(actions);footer.append(row);feedback(footer,script.id);sourceUrlEditor(footer,script.id,disk.url,script.id);renderReview(footer,script.id);card.append(footer);
     }
     sourceManager.append(card);
+    const controllerOptions = body.querySelector("[data-claudex-controller-options]");
+    if (controllerOptions) optionsController.renderSettings(controllerOptions);
   }
   renderUsageOptions();
   const last = snapshot?.lastInstall;
