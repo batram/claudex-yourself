@@ -9,6 +9,7 @@
 // @codex-tested  26.901.5280.0
 // @grant         none
 // @codex-tested  26.924.2738.0
+// @codex-tested  26.1002.6548.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.hide-pets-button");
 const previous = window[stateKey];

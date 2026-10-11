@@ -11,12 +11,7 @@ internal static class MacRelaunchWatcher
     {
         using var running = FindRunning(app);
         if (running is null) throw new InvalidOperationException("Cannot watch macOS updates: the launched Codex process was not found.");
-        var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
-        start.ArgumentList.Add("mac-relaunch-watch");
-        start.ArgumentList.Add(app.BundlePath);
-        start.ArgumentList.Add(app.Version);
-        start.ArgumentList.Add(running.Id.ToString());
-        using var worker = Process.Start(start) ?? throw new InvalidOperationException("Could not start the macOS update relaunch watcher.");
+        using var worker = BackgroundWorker.Start("mac-relaunch-watch", app.BundlePath, app.Version, running.Id.ToString());
     }
 
     internal static async Task<int> RunAsync(string[] arguments)

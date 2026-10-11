@@ -97,9 +97,28 @@ dotnet publish ClaudexYourself.csproj -c Release -r linux-x64 --self-contained t
 
 For a macOS Dock launcher, see [Claudex Dock icon and launcher](assets/macos/README.md).
 
-On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut with the Claudex icon and the installed Codex package's AppUserModelID. Run the command from the published executable you intend to keep: the shortcut stores its absolute path. Unpin the old launcher and pin this shortcut, then verify that running Codex windows group with it. Changing a shortcut's icon alone does not fix a mismatched app identity, and Explorer can retain old pin information until you repin. The shortcut continues to start Codex through Claudex, enabling renderer control and autoload scripts. Recreate and repin it after moving the published directory.
+On Windows, `.\bin\claudex-yourself.exe install-shortcut` creates a **Codex (controlled)** desktop shortcut with the Claudex icon and the separate shell AppUserModelID `ClaudexYourself.ControlledCodex`. The watcher assigns that shell identity to controlled windows while preserving Codex's packaged identity for notifications and updates. Run the command from the published executable you intend to keep: the shortcut stores its absolute path. Unpin the old launcher and pin this shortcut, then verify that running Codex windows group with it. Changing a shortcut's icon alone does not fix a mismatched app identity, and Explorer can retain old pin information until you repin. The shortcut continues to start Codex through Claudex, enabling renderer control and autoload scripts. Recreate and repin it after moving the published directory.
 
 The remaining examples use `claudex-yourself` for readability. Add the published directory to PATH or substitute the executable path above.
+
+The Windows shortcut installer adds four fixed tasks:
+
+| Task | Behavior |
+| --- | --- |
+| **Open Claudex** | Launch controlled Codex or activate an existing controlled session. If vanilla is running, invoke its normal Quit shortcut, then wait for package exit before launching Claudex. |
+| **Open vanilla Codex** | Launch or activate the normal packaged app without DevTools or Claudex startup scripts. If Claudex is running, request normal quit, wait for package exit, then launch vanilla. |
+| **Restart Claudex** | Quit the running Codex app normally in either mode, then restart into Claudex; launch Claudex if closed. |
+| **Quit Claudex** | Quit the running Codex app normally in either mode, respecting Codex's confirmation. Do nothing when closed. |
+
+Windows Codex deliberately stays running after its last window closes. Vanilla mode has no DevTools quit bridge, so the commands locate its notification-area icon, open its tray menu, and invoke the native **Exit** item through Windows accessibility. They reuse an already-open menu, reveal hidden notification icons when necessary, and verify that the menu belongs to the installed Codex process before invoking Exit. No keyboard shortcuts are sent. Controlled sessions use the renderer quit bridge; if renderer readiness fails, the commands fall back to tray Exit. They wait for package exit before relaunching; quit cancellation or failure to exit within 60 seconds aborts the operation. Repeated taskbar clicks cannot start competing operations. The pinned shortcut's primary action is also **Open Claudex**. Tray layout, names, and accessibility support can change with Codex or Windows upgrades and require behavioral revalidation.
+
+`claudex-yourself taskbar-status` reports the detected mode and relevant visible tray controls. Add `--show-hidden` to reveal the notification overflow, or `--check-exit` to open and verify the Codex-owned Exit item without invoking it.
+
+Background autoload, source-update, Windows-update, and macOS-relaunch workers write diagnostic logs under the per-user state directory's `worker-logs/`. Their output streams are independent of the launcher so captured CLI commands can finish while workers keep running.
+
+The CLI equivalents are `claudex-yourself taskbar claudex|vanilla|restart|quit`; `launch-vanilla` remains an alias for the vanilla action. The plain `launch` command retains its controlled-launch readiness checks and does not switch a running vanilla session. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.
+
+The controlled pin combines Claudex's four actions with native **New chat** and **Recent chats**. Recent chats are the eight most recently updated sessions across ChatGPT and local/remote Codex hosts, sorted together by activity; pinning and chat type do not change that order. The watcher checks live history roughly every 15 seconds and preserves native account/project routing for ChatGPT and host routing for Codex. Every destination activates through Claudex so a closed app opens in controlled mode. Native tasks are read without modifying Codex's own list. History failures are reported in `%APPDATA%\claudex-yourself\taskbar-history.json` and `taskbar-status`; unavailable sources retain their last successful history, with startup catalog metadata as a fallback for Codex hosts. Account changes clear the cached history. The separate shell ID prevents native updates from replacing Claudex's actions. Windows history settings and removed destinations remain respected. Re-run `install-shortcut` after moving the published executable to update the task target as well as the desktop shortcut.
 
 ### 3. Try a userscript
 

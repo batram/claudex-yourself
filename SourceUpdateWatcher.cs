@@ -9,12 +9,7 @@ internal static class SourceUpdateWatcher
     private const string Controller = "window[Symbol.for('claudex-yourself.userscript-settings')]";
     internal static void Start()
     {
-        var executable = Environment.ProcessPath!;
-        var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
-        if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
-            start.ArgumentList.Add(typeof(Program).Assembly.Location);
-        start.ArgumentList.Add("sources-watch");
-        Process.Start(start)?.Dispose();
+        BackgroundWorker.Start("sources-watch").Dispose();
     }
     internal static async Task<int> RunAsync()
     {

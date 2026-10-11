@@ -9,11 +9,12 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 ## Repository map
 
 - `Program.cs`, `RendererDevTools.cs`, and `ClaudexMcpServer.cs`: CLI, renderer control, and MCP entry points.
-- `WindowsShortcut.cs`, `MacCodexApp.cs`, and `LinuxCodexApp.cs`: Windows shortcut identity and platform-specific desktop discovery.
+- `WindowsShortcut.cs`, `WindowsJumpList.cs`, `WindowsTaskbarActions.cs`, `WindowsTrayQuit.cs`, `VanillaLaunch.cs`, `MacCodexApp.cs`, and `LinuxCodexApp.cs`: Windows shortcut identity, taskbar tasks, mode detection and switching, native tray Exit invocation, and platform-specific desktop discovery.
 - `UserscriptMetadata.cs`, `UserscriptDevelopment.cs`, and `AutoloadScripts.cs`: userscript metadata, local publishing, execution, and autoload behavior.
 - `ScriptSources.cs`, `ScriptUpdateSchedules.cs`, and `SourceUpdateWatcher.cs`: URL preview/install, persistent source configuration and checks, schedules, and the settings-to-controller connection.
 - `claudex-release.json` and `<Version>` in `ClaudexYourself.csproj`: the published Claudex version contract; keep them aligned.
 - `MacRelaunchWatcher.cs`: restores controlled launch after a macOS native update relaunch.
+- `BackgroundWorker.cs`: independent worker process streams and diagnostic logs.
 - `scripts/*.js`: bundled userscript sources. These are the canonical repository copies.
 - `CodexUpdates.cs`, `update/WindowsPackage.ps1`: Windows update discovery, validation, and deployment.
 - `README.md`, `docs/`, `SECURITY.md`: setup, userscript, updater, and trust documentation.
@@ -22,6 +23,7 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 - `tests/UserscriptSettingsStateChecks.js`, `tests/UserscriptSettingsScrollChecks.js`, and `tests/fixtures/userscript-settings.html`: settings state, scroll-container regression, and browser fixture.
 - `tests/McpSourceSmoke.py`: cross-platform source-tool/schema smoke test; `--live` also checks renderer connectivity and registered feature controllers.
 - `tests/McpProtocolSmoke.ps1`: broader MCP protocol/renderer-tool smoke test, optionally against a live renderer.
+- `tests/BackgroundWorkerSmoke.py`: captured-launch regression with an already controlled renderer.
 - `tests/SearchRendererSource.ps1`: focused live source-search helper.
 - `build.ps1` and `build.sh`: platform build entry points.
 - `bin/`: generated/published output; do not hand-edit generated copies.
