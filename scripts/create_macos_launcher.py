@@ -28,7 +28,17 @@ def main():
     if output.exists():
         parser.error(f"Output already exists: {output}; choose a new output path.")
     output.parent.mkdir(parents=True, exist_ok=True)
-    command = shlex.quote(str(executable)) + " launch"
+    # Dock/Finder launches do not load shell profiles. Discover Homebrew's
+    # runtime using its stable opt path so SDK upgrades do not break the app.
+    command = '''if [ -z "${DOTNET_ROOT:-}" ]; then
+    for claudex_dotnet_root in /usr/local/share/dotnet /opt/homebrew/opt/dotnet/libexec /usr/local/opt/dotnet/libexec "$HOME/.dotnet"; do
+        if [ -x "$claudex_dotnet_root/dotnet" ]; then
+            export DOTNET_ROOT="$claudex_dotnet_root"
+            break
+        fi
+    done
+fi
+exec ''' + shlex.quote(str(executable)) + " launch"
     source = f'''use scripting additions
 on run
     try
@@ -62,8 +72,8 @@ end run
             del metadata[key]
     metadata.update(CFBundleIdentifier="local.claudex-yourself.launcher",
                     CFBundleName="Claudex", CFBundleDisplayName="Claudex",
-                    CFBundleIconFile="Claudex", CFBundleShortVersionString="1.0",
-                    CFBundleVersion="1")
+                    CFBundleIconFile="Claudex", CFBundleShortVersionString="1.1",
+                    CFBundleVersion="2")
     with info.open("wb") as stream:
         plistlib.dump(metadata, stream)
     run("/usr/bin/codesign", "--force", "--sign", "-", str(output))

@@ -31,6 +31,14 @@ not publish or update installed userscript copies. Use
 [Claudex - User scripts](../../docs/userscripts.md#in-app-switches) for script
 updates and check schedules.
 
+Dock and Finder launches do not load your terminal's shell profile. The launcher
+preserves an existing `DOTNET_ROOT` or discovers .NET in the standard Microsoft
+installer location, Homebrew's stable `opt/dotnet/libexec` locations, or
+`~/.dotnet`. This allows framework-dependent builds from `build.sh` to use a
+Homebrew runtime without requiring terminal environment variables. After updating
+the launcher generator, generate a new app bundle and replace your installed
+`~/Applications/Claudex.app` at the same path so the Dock shortcut keeps working.
+
 The Dock launcher and the stdio MCP server are separate launch paths. The
 launcher environment does not configure the MCP server's environment;
 see [MCP setup](../../README.md#mcp-setup) if a Homebrew framework-dependent MCP
