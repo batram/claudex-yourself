@@ -35,6 +35,10 @@ internal static class WindowsTrayQuit
 
     private static async Task RevealHiddenAsync()
     {
+        // The chevron toggles the overflow. Repeated readiness probes must not
+        // close it again, or miss an icon that arrives in the hidden area later.
+        var overflow = FindWindow("NotifyIconOverflowWindow", null);
+        if (overflow != IntPtr.Zero && IsWindowVisible(overflow)) return;
         var chevron = TrayItems().FirstOrDefault(IsChevron);
         if (chevron is null) return;
         ((IAccessible)chevron.Accessible).DoDefaultAction(chevron.Child);
@@ -51,18 +55,11 @@ internal static class WindowsTrayQuit
             InvokeExit(alreadyOpen[0], invoke);
             return;
         }
-        var icons = TrayItems().Where(IsCodexIcon).ToArray();
-        if (icons.Length == 0) { await RevealHiddenAsync(); icons = TrayItems().Where(IsCodexIcon).ToArray(); }
         // A freshly auto-activated package can precede its tray icon. Wait only
         // before sending an Exit action; never retry a quit the user may cancel.
-        var ready = Stopwatch.StartNew();
-        while (icons.Length == 0 && ready.Elapsed < TimeSpan.FromSeconds(5))
-        {
-            await Task.Delay(100);
-            icons = TrayItems().Where(IsCodexIcon).ToArray();
-        }
-        if (icons.Length != 1) throw new InvalidOperationException($"Expected one Codex tray icon; found {icons.Length}. No quit action was sent.");
-        var icon = icons[0];
+        // Reveal overflow again if Explorer wasn't ready on the first probe.
+        var icon = await TrayIconReadiness.WaitAsync(() => TrayItems().Where(IsCodexIcon).ToArray(),
+            RevealHiddenAsync, TimeSpan.FromSeconds(30));
         if (icon.Width <= 0 || icon.Height <= 0) throw new InvalidOperationException("Codex's tray icon is not accessible.");
         var x = icon.X + icon.Width / 2;
         var y = icon.Y + icon.Height / 2;

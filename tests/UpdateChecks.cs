@@ -27,6 +27,18 @@ internal static class UpdateChecks
             "genuinely current registration remains current");
         await CheckInstallRecoveryAsync();
         await CheckRelaunchRecoveryAsync();
+        Assert(CodexUpdates.ShouldRecoverLaunch(true, false, new InvalidOperationException("install failed")),
+            "installation failure reopens Codex in controlled mode");
+        Assert(!CodexUpdates.ShouldRecoverLaunch(false, false, new InvalidOperationException("prepare failed")),
+            "preparation failure leaves the running app alone");
+        Assert(!CodexUpdates.ShouldRecoverLaunch(true, true, new InvalidOperationException("tray unavailable")),
+            "failed takeover is not retried through ordinary launch");
+        Assert(!CodexUpdates.ShouldRecoverLaunch(true, true, new OperationCanceledException()),
+            "cancelled takeover never sends a second quit");
+        Assert(!CodexUpdates.ShouldRecoverLaunch(true, false, new TimeoutException()),
+            "timed out deployment is not relaunched while Windows may still be installing");
+        Assert(!CodexUpdates.ShouldRecoverLaunch(true, false, new OperationCanceledException()),
+            "cancelled update does not trigger recovery launch");
         await CheckDownloadRetriesAsync(check);
         await CheckAvailableVersionsAsync(check);
         await CheckStoreVersionsAsync(check);

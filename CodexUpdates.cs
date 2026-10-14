@@ -332,10 +332,12 @@ internal static class CodexUpdates
         {
             Console.Error.WriteLine(exception);
             await SetStatusAsync(exception is UpdateNotReadyException ? "waiting" : "failed", exception.Message, target, restarting ? "controlled-relaunch" : null);
-            // Make a failure visible again if we already closed the app. Keep the failure status intact.
-            if (appExited && exception is not TimeoutException)
+            // Reopen after an installation failure, but don't retry a failed
+            // takeover: Exit may already have been sent and cancelled. Ordinary
+            // Launch also cannot add DevTools to a vanilla activation.
+            if (ShouldRecoverLaunch(appExited, restarting, exception))
             {
-                try { Program.Launch(); }
+                try { Program.Launch(requireControlled: true); }
                 catch (Exception launchError) { await SetStatusAsync("failed", $"{exception.Message} Relaunch also failed: {launchError.Message}", target, restarting ? "controlled-relaunch" : null); }
             }
             return 1;
@@ -343,6 +345,9 @@ internal static class CodexUpdates
     }
 
     internal sealed record PreparedUpdate(string State, string? PackagePath, string TargetVersion, bool AlreadyStaged = false);
+
+    internal static bool ShouldRecoverLaunch(bool appExited, bool restarting, Exception failure) =>
+        appExited && !restarting && failure is not (TimeoutException or OperationCanceledException);
 
     internal static UpdateStatus UnavailableUpdateStatus(UpdateCheck check)
     {

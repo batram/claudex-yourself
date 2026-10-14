@@ -710,6 +710,7 @@ internal static class Program
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
+        TrayIconReadinessChecks.RunAsync().GetAwaiter().GetResult();
         WindowsNativeJumpListChecks.Run();
         WindowsRecentChatsChecks.Run();
         MacRelaunchChecks.RunAsync().GetAwaiter().GetResult();
