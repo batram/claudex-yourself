@@ -1,11 +1,12 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.2
+// @version       1.4.3
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
 // @codex-tested  26.1007.2314.0
+// @codex-tested  26.1007.9446.0
 // @codex-tested  20156
 // @grant         none
 // ==/ClaudexUserScript==
@@ -56,15 +57,23 @@ const threadInfo = row => propsAbove(row, props => Boolean(props.threadSummary) 
   Boolean(props.conversationId && Object.hasOwn(props, "displayCwd")));
 let nativeCatalog, catalogSubscription;
 const loadNativeCatalog = async () => {
-  const row = document.querySelector(threadSelector);
-  let fiber = row?.[Object.keys(row).find(key => key.startsWith("__reactFiber$"))];
   let chain;
-  for (; fiber && !chain; fiber = fiber.return) {
-    for (let dep = fiber.dependencies?.firstContext; dep; dep = dep.next) {
-      if (dep.memoizedValue instanceof Map && [...dep.memoizedValue.values()].some(value => value?.store && value?.queryClient)) {
-        chain = dep.memoizedValue; break;
+  // renderer-ready can precede the sidebar mounting after an app update.
+  // Wait only for readiness; incompatible catalog exports still fail visibly.
+  const deadline = Date.now() + 10000;
+  while (!chain) {
+    if (!observer) return;
+    const row = document.querySelector(threadSelector);
+    let fiber = row?.[Object.keys(row).find(key => key.startsWith("__reactFiber$"))];
+    for (; fiber && !chain; fiber = fiber.return) {
+      for (let dep = fiber.dependencies?.firstContext; dep; dep = dep.next) {
+        if (dep.memoizedValue instanceof Map && [...dep.memoizedValue.values()].some(value => value?.store && value?.queryClient)) {
+          chain = dep.memoizedValue; break;
+        }
       }
     }
+    if (chain || Date.now() >= deadline) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
   if (!chain) throw new Error("Codex sidebar session scope was not found.");
   const url = [...document.querySelectorAll("script[src],link[href]")].map(element => element.src || element.href)
@@ -94,8 +103,14 @@ const loadNativeCatalog = async () => {
     if (!scope) throw new Error("Codex session scope changed.");
     return args.length ? node.read(scope, chain, args[0]) : scope.store.get(node.resolve(scope, chain));
   };
-  const keys = main[alias("Gtr")], list = main[alias("yF")];
-  const conversation = imported("mc"), router = imported("Nf"), location = imported("Jg");
+  // 26.1007.9446 moved catalog expansion to _F and its key atom to EF.
+  // Check the function shape as well as its export: minified names can be reused
+  // for unrelated values (Gtr is now a recency atom family).
+  const currentList = exports.match(/(?:,|\{)_F as ([^,}]+)/)?.[1];
+  const current = typeof main[currentList] === "function" &&
+    /conversationId/.test(String(main[currentList])) && /workspaceKind/.test(String(main[currentList]));
+  const keys = main[alias(current ? "EF" : "Gtr")], list = main[alias(current ? "_F" : "yF")];
+  const conversation = imported(current ? "fc" : "mc"), router = imported(current ? "jf" : "Nf"), location = imported(current ? "Ug" : "Jg");
   nativeCatalog = {
     read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
       const summary = item.summary || get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId })?.summary;
