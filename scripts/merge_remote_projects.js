@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.3
+// @version       1.4.4
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -9,6 +9,7 @@
 // @codex-tested  26.1007.9446.0
 // @codex-tested  20156
 // @grant         none
+// @codex-tested  20770
 // ==/ClaudexUserScript==
 const scriptId = "merge_remote_projects";
 const stateKey = Symbol.for("claudex-yourself.merge-remote-projects");
@@ -57,13 +58,12 @@ const threadInfo = row => propsAbove(row, props => Boolean(props.threadSummary) 
   Boolean(props.conversationId && Object.hasOwn(props, "displayCwd")));
 let nativeCatalog, catalogSubscription;
 const loadNativeCatalog = async () => {
+  // App upgrades can reach renderer-ready before the sidebar has mounted.
+  // Wait for its scope instead of permanently disabling grouping on launch.
   let chain;
-  // renderer-ready can precede the sidebar mounting after an app update.
-  // Wait only for readiness; incompatible catalog exports still fail visibly.
-  const deadline = Date.now() + 10000;
-  while (!chain) {
+  for (let attempt = 0; attempt < 100 && !chain; attempt++) {
     if (!observer) return;
-    const row = document.querySelector(threadSelector);
+    const row = document.querySelector(threadSelector) || document.querySelector(projectSelector);
     let fiber = row?.[Object.keys(row).find(key => key.startsWith("__reactFiber$"))];
     for (; fiber && !chain; fiber = fiber.return) {
       for (let dep = fiber.dependencies?.firstContext; dep; dep = dep.next) {
@@ -72,10 +72,9 @@ const loadNativeCatalog = async () => {
         }
       }
     }
-    if (chain || Date.now() >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, 100));
+    if (!chain) await new Promise(resolve => setTimeout(resolve, 100));
   }
-  if (!chain) throw new Error("Codex sidebar session scope was not found.");
+  if (!chain) throw new Error("Codex sidebar session scope was not found within 10 seconds.");
   const url = [...document.querySelectorAll("script[src],link[href]")].map(element => element.src || element.href)
     .concat(performance.getEntriesByType("resource").map(entry => entry.name))
     .find(name => /\/app-initial-[^/]+\.js(?:\?|$)/.test(name));
@@ -83,7 +82,7 @@ const loadNativeCatalog = async () => {
   const source = await (await fetch(url)).text();
   const exports = source.slice(source.lastIndexOf("export{"));
   const alias = symbol => {
-    const name = exports.match(new RegExp(`(?:,|\\{)${symbol} as ([^,}]+)`))?.[1];
+    const name = exports.match(new RegExp(`(?:,|\\{)${symbol.replaceAll("$", "\\$")} as ([^,}]+)`))?.[1];
     if (!name) throw new Error(`Codex sidebar catalog export ${symbol} is unavailable.`);
     return name;
   };
@@ -103,14 +102,22 @@ const loadNativeCatalog = async () => {
     if (!scope) throw new Error("Codex session scope changed.");
     return args.length ? node.read(scope, chain, args[0]) : scope.store.get(node.resolve(scope, chain));
   };
-  // 26.1007.9446 moved catalog expansion to _F and its key atom to EF.
-  // Check the function shape as well as its export: minified names can be reused
-  // for unrelated values (Gtr is now a recency atom family).
-  const currentList = exports.match(/(?:,|\{)_F as ([^,}]+)/)?.[1];
-  const current = typeof main[currentList] === "function" &&
-    /conversationId/.test(String(main[currentList])) && /workspaceKind/.test(String(main[currentList]));
-  const keys = main[alias(current ? "EF" : "Gtr")], list = main[alias(current ? "_F" : "yF")];
-  const conversation = imported(current ? "fc" : "mc"), router = imported(current ? "jf" : "Nf"), location = imported(current ? "Ug" : "Jg");
+  // Build 20770 moved navigation atoms into app-initial and renamed the
+  // catalog symbols. Validate the old adapter before choosing it: a reused
+  // minifier name can still be exported while referring to an unrelated function.
+  const legacyKeys = main[alias("Gtr")];
+  // Preserve the separately tested Windows 26.1007.9446 adapter as well.
+  const windowsList = exports.match(/(?:,|\{)_F as ([^,}]+)/)?.[1];
+  const windows = typeof main[windowsList] === "function" &&
+    /conversationId/.test(String(main[windowsList])) && /workspaceKind/.test(String(main[windowsList]));
+  const legacy = !windows && Boolean(legacyKeys?.scope && legacyKeys?.resolve);
+  const keys = windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
+  const list = main[alias(windows ? "_F" : legacy ? "yF" : "qB")];
+  const conversation = windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
+  const router = windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
+  const location = windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
+  if (!keys?.scope || typeof list !== "function" || !router?.scope || !location?.scope)
+    throw new Error("Codex sidebar catalog adapter is incompatible with this build.");
   nativeCatalog = {
     read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
       const summary = item.summary || get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId })?.summary;
@@ -401,7 +408,8 @@ const install = async () => {
   refresh();
   return { installed: true, ...lastStatus };
 };
-const controller = { id: scriptId, install, uninstall, refresh,
+const controller = { id: scriptId, name: "Merge remote projects",
+  description: "Groups remote chats under matching local projects.", install, uninstall, refresh,
   get installed() { return Boolean(observer); }, get status() { return lastStatus; },
   matching: { repo, folder, score, match } };
 window[stateKey] = controller;

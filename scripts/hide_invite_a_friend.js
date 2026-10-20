@@ -9,6 +9,7 @@
 // @grant         none
 // @codex-tested  26.924.2738.0
 // @codex-tested  26.1002.6548.0
+// @codex-tested  20770
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.hide-invite-a-friend");
 const previous = window[stateKey];

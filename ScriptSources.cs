@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
@@ -21,8 +23,51 @@ internal sealed partial class ScriptSources
     internal ScriptSources(string root, HttpClient? client = null, Func<string>? codexVersion = null)
     {
         this.root = root;
-        this.client = client ?? new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { Timeout = TimeSpan.FromSeconds(20) };
+        this.client = client ?? new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false, UseCookies = false, ConnectCallback = ConnectSourceAsync }) { Timeout = TimeSpan.FromSeconds(20) };
         this.codexVersion = codexVersion ?? UserscriptMetadata.CurrentCodexVersion;
+    }
+    // Race staggered addresses so an advertised but unusable IPv6 route cannot
+    // consume the entire update timeout. HttpClient still owns TLS verification,
+    // proxy handling and connection pooling; this callback opens only TCP.
+    internal static async ValueTask<Stream> ConnectSourceAsync(SocketsHttpConnectionContext context, CancellationToken cancellation)
+    {
+        var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellation);
+        return await ConnectAddressesAsync(addresses, context.DnsEndPoint.Port, cancellation);
+    }
+    internal static async Task<Stream> ConnectAddressesAsync(IPAddress[] addresses, int port, CancellationToken cancellation)
+    {
+        if (addresses.Length == 0) throw new SocketException((int)SocketError.HostNotFound);
+        using var race = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        async Task<Socket> Connect(IPAddress address, int index)
+        {
+            var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(index * 250), race.Token);
+                await socket.ConnectAsync(new IPEndPoint(address, port), race.Token);
+                return socket;
+            }
+            catch { socket.Dispose(); throw; }
+        }
+        var pending = addresses.Select(Connect).ToList();
+        try
+        {
+            while (pending.Count > 0)
+            {
+                var finished = await Task.WhenAny(pending);
+                pending.Remove(finished);
+                try { return new NetworkStream(await finished, ownsSocket: true); }
+                catch when (pending.Count > 0 && !cancellation.IsCancellationRequested) { }
+            }
+            throw new SocketException((int)SocketError.NotConnected);
+        }
+        finally
+        {
+            race.Cancel();
+            // Await and dispose every losing socket, including simultaneous successes.
+            foreach (var task in pending)
+                try { (await task).Dispose(); } catch { }
+        }
     }
     internal sealed record Configuration(string ClaudexUrl, Dictionary<string, string> Scripts, CheckSchedule? Schedule = null, Dictionary<string, CheckSchedule>? ScriptSchedules = null);
     internal sealed record Preview(string PreviewId, string Url, UserscriptMetadata Metadata, string Source, string Sha256,
@@ -33,7 +78,7 @@ internal sealed partial class ScriptSources
         ? JsonSerializer.Deserialize<Configuration>(File.ReadAllText(ConfigPath), Json) ?? throw new FormatException("Invalid sources configuration.")
         : new(DefaultManifest, new(StringComparer.OrdinalIgnoreCase));
     internal static string Hash(string source) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source)));
-    private static string? BundledUrl(string id) => id is "userscript_settings" or "sidebar_usage" or "hide_pets_button" or "hide_invite_a_friend" or "codex_updates"
+    private static string? BundledUrl(string id) => id is "userscript_settings" or "sidebar_usage" or "hide_pets_button" or "hide_invite_a_friend" or "merge_remote_projects" or "remote_device_icons" or "codex_updates"
         ? "https://raw.githubusercontent.com/batram/claudex-yourself/master/scripts/" + id + ".js" : null;
     internal static Uri NormalizeUrl(string url)
     {

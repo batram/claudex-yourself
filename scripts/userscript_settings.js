@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.4.1
+// @version       1.4.2
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -13,6 +13,7 @@
 // @codex-tested  26.924.2738.0
 // @codex-tested  26.1002.6548.0
 // @codex-tested  26.1007.2314.0
+// @codex-tested  20770
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.userscript-settings");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
@@ -43,11 +44,11 @@ const scriptState = script => {
     status:!supported ? "Windows only — unavailable on this platform." : !available ? "Not loaded in this window." : controller.installed === true ? "Enabled" : "Disabled" };
 };
 const isEnabled = id => scriptState(getCatalog().find(script => script.id === id) || {id}).enabled;
-const setEnabled = (id, enabled) => {
+const setEnabled = async (id, enabled) => {
   const script = getCatalog().find(script => script.id === id);
   if (!script || !scriptState(script).available) return;
   const controller = registry.get(id);
-  (enabled ? controller.install : controller.uninstall).call(controller);
+  await (enabled ? controller.install : controller.uninstall).call(controller);
   const preferences = readPreferences();
   preferences[id] = controller.installed === true;
   localStorage.setItem(preferencesKey, JSON.stringify(preferences));
@@ -331,7 +332,16 @@ const makeSwitch = (label, checked, disabled, change) => {
   const input = sourceElement("input"); input.type = "checkbox";
   input.setAttribute("aria-label", label); input.dataset.focusKey = label;
   input.checked = checked; input.disabled = disabled;
-  input.onchange = () => change(input.checked);
+  input.onchange = async () => {
+    input.disabled = true;
+    try { await change(input.checked); }
+    catch (error) {
+      input.checked = checked;
+      const message = sourceElement("span", String(error), "claudex-state");
+      message.setAttribute("role", "alert"); wrapper.append(message);
+    }
+    finally { input.disabled = disabled; }
+  };
   wrapper.append(input, sourceElement("span")); return wrapper;
 };
 const renderSources = () => {

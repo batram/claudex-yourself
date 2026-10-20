@@ -16,6 +16,26 @@ internal static class ScriptSourceChecks
         }
         static string Source(string version, string id = "demo", string platforms = "windows, macos, linux") =>
             $"// ==ClaudexUserScript==\n// @name Demo\n// @id {id}\n// @version {version}\n// @description Test\n// @run-at renderer-ready\n// @platform {platforms}\n// @grant none\n// ==/ClaudexUserScript==\nreturn true;";
+        // A failed first address must not prevent a working second family.
+        using (var listener = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0))
+        {
+            listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var accepting = listener.AcceptTcpClientAsync();
+            using var connected = await ScriptSources.ConnectAddressesAsync(
+                [IPAddress.IPv6Loopback, IPAddress.Loopback], port, CancellationToken.None);
+            using var accepted = await accepting;
+            Assert(connected.CanWrite, "address fallback connects to the reachable address");
+            await connected.WriteAsync(new byte[] { 42 });
+            var buffer = new byte[1];
+            Assert(await accepted.GetStream().ReadAsync(buffer) == 1 && buffer[0] == 42, "winning socket remains usable");
+        }
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            await Reject(async () => { using var stream = await ScriptSources.ConnectAddressesAsync(
+                [IPAddress.Loopback], 1, cancelled.Token); }, "cancelled address race");
+        }
         var root = Path.Combine(Path.GetTempPath(), "claudex-source-check-" + Guid.NewGuid().ToString("N"));
         var contents = Source("1.0.0");
         using var client = new HttpClient(new Handler(request =>
