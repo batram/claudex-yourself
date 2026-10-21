@@ -26,17 +26,19 @@ console.log("Merge remote projects: 12 matching checks passed.");
 const source = fs.readFileSync("scripts/merge_remote_projects.js", "utf8");
 const exportResolver = source.slice(source.indexOf('  const exports = source.slice'), source.indexOf('  // These private symbols'));
 const adapter = source.slice(source.indexOf('  const legacyKeys ='), source.indexOf('  nativeCatalog ='));
-for (const mode of ["legacy", "windows", "20770"]) {
-  const legacy = mode === "legacy", windows = mode === "windows";
+for (const mode of ["legacy", "windows", "20770", "26.1016"]) {
+  const legacy = mode === "legacy", windows = mode === "windows", current = mode === "26.1016";
   const atom = { scope: {}, resolve() {} };
   const main = { oldKeys: legacy ? atom : () => {}, oldList() {}, newKeys: atom, newList() {}, conversation: atom, router: atom, location: atom };
   if (windows) { main.windowsKeys = atom; main.windowsList = function(){return {conversationId:"test",workspaceKind:"project"}}; }
-  const exports = (windows ? "export{EF as windowsKeys,_F as windowsList," : "export{") + 'Gtr as oldKeys,yF as oldList,$Ki as newKeys,qB as newList,ek as conversation,eh as router,ch as location}';
+  if (current) { main.currentKeys = atom; main.currentList = function(e,t){return t.flatMap(t=>e().byKey.has(t)?[{conversationId:t,workspaceKind:"project"}]:[])}; }
+  const exports = current ? 'export{BXi as currentList,OZi as currentKeys,Fcr as conversation,CD as router,HE as location}' :
+    (windows ? "export{EF as windowsKeys,_F as windowsList," : "export{") + 'Gtr as oldKeys,yF as oldList,$Ki as newKeys,qB as newList,ek as conversation,eh as router,ch as location}';
   const picked = vm.runInNewContext(`(()=>{${exportResolver}${adapter}return {keys,list,router,location}})()`, {
     source:exports, main, imported: () => atom
   });
-  assert.equal(picked.keys, windows ? main.windowsKeys : legacy ? main.oldKeys : main.newKeys);
-  assert.equal(picked.list, windows ? main.windowsList : legacy ? main.oldList : main.newList);
+  assert.equal(picked.keys, current ? main.currentKeys : windows ? main.windowsKeys : legacy ? main.oldKeys : main.newKeys);
+  assert.equal(picked.list, current ? main.currentList : windows ? main.windowsList : legacy ? main.oldList : main.newList);
   assert.equal(picked.router, atom);
 }
 console.log("Legacy and build 20770 catalog adapters passed, including dollar-sign exports.");

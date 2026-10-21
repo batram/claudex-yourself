@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.4.8
+// @version       1.4.9
 // @description   Shows all available Codex usage limits in the sidebar or compact rail.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -159,7 +159,7 @@ const render = (data, stale = false) => {
   const toggle = `<button type="button" class="claudex-usage-toggle" aria-label="Show usage limits, ${escapeHtml(summary)}" aria-expanded="false" title="${escapeHtml(summary)}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 17a8 8 0 1 1 16 0"/><path d="m12 17 4-6"/><circle cx="12" cy="17" r="1"/></svg>${Number.isFinite(remaining) ? `<span>${remaining}%</span>` : ""}</button>`;
   const errorMessage = refreshError ? '<div class="claudex-usage-error" role="status">Could not refresh usage. Retrying automatically. <button type="button" class="claudex-usage-retry">Retry now</button></div>' : "";
   if (!data) {
-    widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden><div class="claudex-usage-heading">${usageLink}<span>${refreshError ? "Unavailable" : "Loading…"}</span></div>${errorMessage}</div>`;
+    widget.innerHTML = `${toggle}<div class="claudex-usage-popover" hidden><div class="claudex-usage-heading">${usageLink}<span>${refreshError ? "Unavailable" : "Loading\u2026"}</span></div>${errorMessage}</div>`;
     if (wasOpen && compact) openPopover();
     renderNavigationStatus();
     return;

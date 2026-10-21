@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.4.2
+// @version       1.4.4
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -41,7 +41,7 @@ const scriptState = script => {
   const controller = registry.get(script.id);
   const available = supported && typeof controller?.install === "function" && typeof controller?.uninstall === "function";
   return { available, enabled:available && controller.installed === true,
-    status:!supported ? "Windows only — unavailable on this platform." : !available ? "Not loaded in this window." : controller.installed === true ? "Enabled" : "Disabled" };
+    status:!supported ? "Windows only \u2014 unavailable on this platform." : !available ? "Not loaded in this window." : controller.installed === true ? "Enabled" : "Disabled" };
 };
 const isEnabled = id => scriptState(getCatalog().find(script => script.id === id) || {id}).enabled;
 const setEnabled = async (id, enabled) => {
@@ -170,7 +170,7 @@ const requestSource = (action, values = {}) => new Promise((resolve, reject) => 
   sourceState.queued = { id, action, ...values };
 });
 const performSource = async (action, values, done, key = "claudex") => {
-  sourceState.feedback[key] = {text:action === "check_script" || action === "check_claudex" ? "Checking…" : action === "preview" ? "Downloading preview…" : action === "install" ? "Installing…" : "Saving…"};
+  sourceState.feedback[key] = {text:action === "check_script" || action === "check_claudex" ? "Checking\u2026" : action === "preview" ? "Downloading preview\u2026" : action === "install" ? "Installing\u2026" : "Saving\u2026"};
   const operation = requestSource(action, values);
   renderSources();
   try {
@@ -206,7 +206,7 @@ const disclosure = (key, title) => {
   return element;
 };
 const feedback = (container, key) => {
-  const message = sourceState.feedback[key] || (sourceState.checkErrors[key] ? {text:"Couldn’t check for updates.",error:true} : null);
+  const message = sourceState.feedback[key] || (sourceState.checkErrors[key] ? {text:"Couldn\u2019t check for updates.",error:true} : null);
   const status = sourceElement("p", message?.text || "", "claudex-source-status");
   status.dataset.feedbackKey = key;
   if (sourceState.checkErrors[key]) status.title = sourceState.checkErrors[key];
@@ -273,7 +273,7 @@ const sourceUrlEditor = (container, key, value, name) => {
   field.type = "url";
   field.setAttribute("aria-label", `${name || "Claudex"} update source URL`);
   field.dataset.focusKey = "url:" + key;
-  field.placeholder = "https://…";
+  field.placeholder = "https://\u2026";
   field.value = sourceState.drafts[key] ?? value ?? "";
   field.oninput = () => { sourceState.drafts[key] = field.value; };
   const row = sourceElement("div", undefined, "claudex-source-actions");
@@ -299,7 +299,7 @@ const renderReview = (container, key) => {
   if (!preview || sourceState.previewTarget !== key) return;
   const review = sourceElement("section", undefined, "claudex-source-review");
   review.setAttribute("aria-label", "Userscript source review");
-  review.append(sourceElement("h4", `Review ${preview.metadata.name} · ${preview.metadata.version}`));
+  review.append(sourceElement("h4", `Review ${preview.metadata.name} \u00b7 ${preview.metadata.version}`));
   review.append(sourceElement("p", preview.metadata.description, "claudex-muted"));
   review.append(sourceElement("p", `${preview.url}\nDeclared grants: ${preview.metadata.grants.join(", ")}\n${preview.compatibility.tested ? "Tested on this Codex build." : preview.compatibility.platformSupported ? "Not yet tested on this Codex build." : "Not supported on this platform."}`, "claudex-source-meta claudex-muted"));
   const code = disclosure("review:" + preview.previewId, "Read complete source");
@@ -333,12 +333,15 @@ const makeSwitch = (label, checked, disabled, change) => {
   input.setAttribute("aria-label", label); input.dataset.focusKey = label;
   input.checked = checked; input.disabled = disabled;
   input.onchange = async () => {
+    const errorHost = wrapper.closest(".claudex-script-card")?.querySelector(".claudex-card-copy") || wrapper.parentElement;
+    errorHost?.querySelector(".claudex-toggle-error")?.remove();
     input.disabled = true;
     try { await change(input.checked); }
     catch (error) {
       input.checked = checked;
-      const message = sourceElement("span", String(error), "claudex-state");
-      message.setAttribute("role", "alert"); wrapper.append(message);
+      const message = sourceElement("p", error.message || String(error), "claudex-state claudex-toggle-error");
+      message.style.cssText = "white-space:normal;overflow-wrap:anywhere;max-width:100%;margin:6px 0 0";
+      message.setAttribute("role", "alert"); errorHost?.append(message);
     }
     finally { input.disabled = disabled; }
   };
@@ -358,7 +361,7 @@ const renderSources = () => {
     const add = sourceElement("section", undefined, "claudex-script-card claudex-card-body");
     add.dataset.sourceId = "add";
     add.append(sourceElement("h3", "Add a userscript"), sourceElement("p", "Paste a GitHub file link or a direct script URL to review it before installing.", "claudex-muted"));
-    const url = sourceElement("input"); url.type = "url"; url.placeholder = "https://…/my-script.js";
+    const url = sourceElement("input"); url.type = "url"; url.placeholder = "https://\u2026/my-script.js";
     url.setAttribute("aria-label", "New userscript URL"); url.dataset.focusKey = "url:add";
     url.value = sourceState.drafts.add || "";
     url.oninput = () => { sourceState.drafts.add = url.value; };

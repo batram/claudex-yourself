@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.4
+// @version       1.4.5
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -81,9 +81,9 @@ const loadNativeCatalog = async () => {
   if (!url) throw new Error("Codex sidebar module was not found.");
   const source = await (await fetch(url)).text();
   const exports = source.slice(source.lastIndexOf("export{"));
-  const alias = symbol => {
+  const alias = (symbol, required = true) => {
     const name = exports.match(new RegExp(`(?:,|\\{)${symbol.replaceAll("$", "\\$")} as ([^,}]+)`))?.[1];
-    if (!name) throw new Error(`Codex sidebar catalog export ${symbol} is unavailable.`);
+    if (!name && required) throw new Error(`Codex sidebar catalog export ${symbol} is unavailable.`);
     return name;
   };
   // These private symbols are behaviorally checked against the declared Codex
@@ -105,22 +105,26 @@ const loadNativeCatalog = async () => {
   // Build 20770 moved navigation atoms into app-initial and renamed the
   // catalog symbols. Validate the old adapter before choosing it: a reused
   // minifier name can still be exported while referring to an unrelated function.
-  const legacyKeys = main[alias("Gtr")];
+  const legacyKeys = main[alias("Gtr", false)];
+  const currentList = main[alias("BXi", false)];
+  const current = typeof currentList === "function" && /conversationId/.test(String(currentList)) &&
+    /workspaceKind/.test(String(currentList)) && /\.byKey\.has/.test(String(currentList));
   // Preserve the separately tested Windows 26.1007.9446 adapter as well.
   const windowsList = exports.match(/(?:,|\{)_F as ([^,}]+)/)?.[1];
-  const windows = typeof main[windowsList] === "function" &&
+  const windows = !current && typeof main[windowsList] === "function" &&
     /conversationId/.test(String(main[windowsList])) && /workspaceKind/.test(String(main[windowsList]));
-  const legacy = !windows && Boolean(legacyKeys?.scope && legacyKeys?.resolve);
-  const keys = windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
-  const list = main[alias(windows ? "_F" : legacy ? "yF" : "qB")];
-  const conversation = windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
-  const router = windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
-  const location = windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
+  const legacy = !current && !windows && Boolean(legacyKeys?.scope && legacyKeys?.resolve);
+  const keys = current ? main[alias("OZi")] : windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
+  const list = current ? currentList : main[alias(windows ? "_F" : legacy ? "yF" : "qB")];
+  const conversation = current ? main[alias("Fcr")] : windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
+  const router = current ? main[alias("CD")] : windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
+  const location = current ? main[alias("HE")] : windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
   if (!keys?.scope || typeof list !== "function" || !router?.scope || !location?.scope)
     throw new Error("Codex sidebar catalog adapter is incompatible with this build.");
   nativeCatalog = {
     read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
-      const summary = item.summary || get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId })?.summary;
+      const fallback = item.summary ? null : get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId });
+      const summary = item.summary || (current ? fallback : fallback?.summary);
       return { ...item, summary, title: summary?.title || item.conversationId };
     }),
     navigate: (id, hostId, projectId) => get(router).navigate(`/local/${encodeURIComponent(id)}?hostId=${encodeURIComponent(hostId)}`, {
