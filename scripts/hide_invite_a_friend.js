@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Hide Invite a friend
 // @id            hide_invite_a_friend
-// @version       1.1.1
+// @version       1.1.2
 // @description   Hides the Invite a friend account-menu entry.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -10,6 +10,7 @@
 // @codex-tested  26.924.2738.0
 // @codex-tested  26.1002.6548.0
 // @codex-tested  20770
+// @codex-tested  26.1016.6573.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.hide-invite-a-friend");
 const previous = window[stateKey];

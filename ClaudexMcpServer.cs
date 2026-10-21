@@ -11,6 +11,7 @@ internal static class ClaudexMcpServer
 
     public static async Task<int> RunAsync()
     {
+        ControllerReload.Register();
         while (await Console.In.ReadLineAsync() is { } line)
         {
             line = line.TrimStart('\uFEFF');
@@ -122,7 +123,7 @@ internal static class ClaudexMcpServer
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         var targets = JsonNode.Parse(await DevToolsLoopback.ReadMainTargetListAsync(client))?.AsArray();
         var rendererCount = targets?.Count(node => node?["type"]?.GetValue<string>() == "page") ?? 0;
-        return new { controlled = rendererCount > 0, rendererCount, userScriptDirectory = Program.UserScriptDirectory };
+        return new { controlled = rendererCount > 0, rendererCount, userScriptDirectory = Program.UserScriptDirectory, controller = ControllerReload.Current };
     }
 
     private static object ListScripts()

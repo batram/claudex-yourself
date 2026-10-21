@@ -1,12 +1,13 @@
 // ==ClaudexUserScript==
 // @name          Codex updates
 // @id            codex_updates
-// @version       1.5.1
+// @version       1.5.2
 // @description   Shows Codex updates and the progress of the external claudex update worker.
 // @run-at        renderer-ready
 // @platform      windows
 // @grant         none
 // @codex-tested  26.1002.6548.0
+// @codex-tested  26.1016.6573.0
 // ==/ClaudexUserScript==
 const key = Symbol.for('claudex-yourself.codex-updates');
 window[key]?.uninstall?.();

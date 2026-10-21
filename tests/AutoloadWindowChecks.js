@@ -29,7 +29,9 @@ async function main() {
     return url.origin === 'null' && url.host === '-' && url.protocol === 'app:' && url.pathname === '/index.html'
       && (!url.search || /^\/(local|remote)\//.test(url.searchParams.get('initialRoute') || ''));
   });
-  assert(pages.some(target => new URL(target.url).searchParams.has('initialRoute')), 'Open a session window before running this check');
+  assert(pages.length > 0, 'A controlled renderer is available');
+  if (!process.argv.includes('--main-only'))
+    assert(pages.some(target => new URL(target.url).searchParams.has('initialRoute')), 'Open a session window before running this check, or pass --main-only for the main-window check');
   const applicationData = process.platform === 'darwin'
     ? path.join(os.homedir(), 'Library', 'Application Support')
     : process.platform === 'linux'
@@ -53,7 +55,7 @@ async function main() {
     if (enabled.includes('userscript_settings')) assert(runtime.settingsStyle, `Settings styles installed in ${target.id}`);
     console.log(JSON.stringify({ target: target.id, url: target.url, runtime }));
   }
-  console.log('Live autoload window checks passed.');
+  console.log(process.argv.includes('--main-only') ? 'Live autoload checks passed for available windows (multi-window coverage not required).' : 'Live autoload window checks passed.');
 }
 if (require.main === module) main().catch(error => { console.error(error); process.exitCode = 1; });
 module.exports = { evaluate };

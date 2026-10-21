@@ -44,7 +44,7 @@ internal static class Program
                 "dev" => await UserscriptDevelopment.RunAsync(arguments.Skip(1).ToArray()),
                 "list" => ListScripts(),
                 "mcp" => await ClaudexMcpServer.RunAsync(),
-                "reload-worker" => await ReloadWorkerAsync(),
+                "reload-worker" => await ControllerReload.RunAsync(),
                 "autoload-worker" => await BackgroundWorker.RunAsync("autoload-worker", AutoloadScripts.RunWorkerAsync),
                 "sources-watch" => await BackgroundWorker.RunAsync("sources-watch", SourceUpdateWatcher.RunAsync),
                 "mac-relaunch-watch" => await BackgroundWorker.RunAsync("mac-relaunch-watch", () => MacRelaunchWatcher.RunAsync(arguments.Skip(1).ToArray())),
@@ -619,14 +619,7 @@ internal static class Program
 
     internal static void StartReloadWorker()
     {
-        var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot resolve the current executable.");
-        var start = new ProcessStartInfo(executable)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true
-        };
-        start.ArgumentList.Add("reload-worker");
-        Process.Start(start)?.Dispose();
+        ControllerReload.StartWorker();
     }
 
     internal static void StartAutoloadWorker()
@@ -645,26 +638,6 @@ internal static class Program
         };
         var result = AutoloadScripts.Set(name, enabled);
         Console.WriteLine($"Autoload {(result.Enabled ? "enabled" : "disabled")} for {result.Name}.");
-        return 0;
-    }
-
-    private static async Task<int> ReloadWorkerAsync()
-    {
-        Directory.CreateDirectory(StateDirectory);
-        var statusPath = Path.Combine(StateDirectory, "reload-status.json");
-        await Task.Delay(750);
-        object status;
-        try
-        {
-            var source = await File.ReadAllTextAsync(ResolveScript("reload-mcp"));
-            var result = await RunScriptAsync(source, "reload-mcp");
-            status = new { state = "completed", completed_at_utc = DateTime.UtcNow, logs = result.Logs, result = result.Result };
-        }
-        catch (Exception exception)
-        {
-            status = new { state = "failed", completed_at_utc = DateTime.UtcNow, error = exception.Message };
-        }
-        await File.WriteAllTextAsync(statusPath, JsonSerializer.Serialize(status, new JsonSerializerOptions { WriteIndented = true }));
         return 0;
     }
 
@@ -706,6 +679,7 @@ internal static class Program
             RendererDevTools.IsUserscriptPage("app://other/detached-window.html"))
             throw new InvalidOperationException("Userscript renderer identification failed.");
         ScriptSourceChecks.RunAsync().GetAwaiter().GetResult();
+        ControllerReloadChecks.Run();
         SourceScheduleChecks.RunAsync().GetAwaiter().GetResult();
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();

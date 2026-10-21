@@ -36,8 +36,14 @@ function Add-AppxPackage {
 foreach ($case in @('stage', 'install', 'register-staged', 'cancel', 'ordinary-error', 'elevated-error', 'wrong-user')) {
     $capture = [IO.Path]::GetTempFileName()
     try {
-        & powershell -NoProfile -File $PSCommandPath -Scenario $case 2> $capture | Out-Null
-        $code = $LASTEXITCODE
+        # Windows PowerShell promotes redirected native stderr to error records.
+        # The failure scenarios deliberately emit stderr; inspect their exit code
+        # and message below instead of terminating the harness early.
+        $ErrorActionPreference = 'Continue'
+        try {
+            & powershell -NoProfile -File $PSCommandPath -Scenario $case 2> $capture | Out-Null
+            $code = $LASTEXITCODE
+        } finally { $ErrorActionPreference = 'Stop' }
         $detail = Get-Content -LiteralPath $capture -Raw
         if ($case -in @('stage', 'install', 'register-staged')) {
             if ($code -ne 0) { throw "$case failed: $detail" }

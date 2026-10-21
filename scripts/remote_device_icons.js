@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Remote device icons
 // @id            remote_device_icons
-// @version       1.0.0
+// @version       1.0.1
 // @description   Choose preset or uploaded icons for each remote device in native and grouped chat lists.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -9,6 +9,7 @@
 // @codex-tested  20156
 // @grant         none
 // @codex-tested  20770
+// @codex-tested  26.1016.6573.0
 // ==/ClaudexUserScript==
 const scriptId = "remote_device_icons";
 const stateKey = Symbol.for("claudex-yourself.remote-device-icons");

@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.5
+// @version       1.4.6
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -10,6 +10,7 @@
 // @codex-tested  20156
 // @grant         none
 // @codex-tested  20770
+// @codex-tested  26.1016.6573.0
 // ==/ClaudexUserScript==
 const scriptId = "merge_remote_projects";
 const stateKey = Symbol.for("claudex-yourself.merge-remote-projects");

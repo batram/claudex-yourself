@@ -40,7 +40,7 @@ macOS and Linux:
 sh ./build.sh
 ```
 
-The default output is `bin/`. Windows defaults to `win-x64`; the shell script selects the host OS and architecture. Explicit runtime builds write to `bin/<runtime>/`:
+Native builds always publish to `bin/`, including an explicit host runtime such as `build.ps1 win-x64` on Windows. Cross-platform builds publish to `artifacts/<runtime>/`. Windows defaults to `win-x64`; the shell script selects the host OS and architecture. For example:
 
 ```powershell
 .\build.ps1 win-x64
@@ -170,7 +170,9 @@ claudex-yourself configure codex
 claudex-yourself run reload-mcp
 ```
 
-The first command registers the current executable as the `claudex-yourself` stdio MCP server. The second reloads Codex's MCP configuration through the controlled renderer and verifies that this server reconnects. Keep the executable at its registered location, or configure it again after moving it.
+The first command registers the current executable as the `claudex-yourself` stdio MCP server. The second refreshes Codex's MCP configuration; it does not force an unchanged server process to restart. For controller upgrades, use the MCP `reload_mcp` tool and inspect `get_reload_status` after reconnecting. Its detached worker stops the registered MCP processes for this installation, refreshes the configuration, and requires new process identities with the published assembly's build ID before reporting completion. A version number or tool listing alone is insufficient. Legacy processes without registration require a one-time manual restart. Background workers remain separate: restart them when their implementation changes. Keep the executable at its registered location, or configure it again after moving it.
+
+On Windows, builds stage publication and preserve previous binaries under `artifacts/previous-*` so an active controller does not block publication. Do not invoke reload until the build finishes. The reload worker uses Windows CIM process creation to survive the MCP job's termination; failure to launch it is returned as an error. Migrate older `bin/win-x64` installations to `bin`: reconfigure MCP and recreate the controlled shortcut from `bin`, update any PATH entry, and restart background workers from that location. Cross-platform output is for distribution, not a second local installation.
 
 For a framework-dependent Homebrew build on macOS, the GUI-launched MCP process may not inherit your terminal's `DOTNET_ROOT`. If it exits during initialization, register the runtime explicitly instead of using `configure codex`. For an Apple Silicon Homebrew install, run this from the repository root (adjust the runtime path for your installation):
 

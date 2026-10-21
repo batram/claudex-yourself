@@ -88,7 +88,7 @@ node tests/UserscriptSettingsScrollChecks.js
 python3 tests/McpSourceSmoke.py ./bin/claudex-yourself
 ```
 
-With a reachable controlled renderer, add `--live` to the Python smoke command. On Windows use the `.exe` path and your Python 3 command, for example `python tests/McpSourceSmoke.py .\bin\claudex-yourself.exe --live`. Explicit runtime builds need their corresponding `bin/<runtime>/` executable path. The Python source smoke complements the broader PowerShell renderer-tool smoke above.
+With a reachable controlled renderer, add `--live` to the Python smoke command. On Windows use the `.exe` path and your Python 3 command, for example `python tests/McpSourceSmoke.py .\bin\claudex-yourself.exe --live`. Explicit host-runtime builds also use `bin/`; cross-platform builds use `artifacts/<runtime>/`. The Python source smoke complements the broader PowerShell renderer-tool smoke above.
 
 For settings layout work, serve the repository locally with `python3 -m http.server 8765 --bind 127.0.0.1` and open `http://127.0.0.1:8765/tests/fixtures/userscript-settings.html` through browser tooling. Exercise the relevant desktop/narrow widths, light/dark themes, scrolling, toggles, source editing, and schedule inheritance. The fixture simulates controller responses; separately verify the live Codex layout/connection and report native-platform gaps. Run the relevant automated checks after visual verification.
 
@@ -128,7 +128,7 @@ The build does not add the CLI to `PATH`. If it has been installed on `PATH`, re
 Get-Command claudex-yourself
 ```
 
-An already-running shell may retain its old `PATH`. If resolution fails, use the published executable directly (explicit runtime builds use `bin/<runtime>/`):
+An already-running shell may retain its old `PATH`. If resolution fails, use the published executable directly (host-runtime builds use `bin/`; cross-platform builds use `artifacts/<runtime>/`):
 
 ```powershell
 .\bin\claudex-yourself.exe <command>

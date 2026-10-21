@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.4.9
+// @version       1.4.10
 // @description   Shows all available Codex usage limits in the sidebar or compact rail.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -12,6 +12,7 @@
 // @codex-tested  26.924.2738.0
 // @codex-tested  26.1002.6548.0
 // @codex-tested  20770
+// @codex-tested  26.1016.6573.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.sidebar-usage");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
