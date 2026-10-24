@@ -26,13 +26,13 @@ console.log("Merge remote projects: 12 matching checks passed.");
 const source = fs.readFileSync("scripts/merge_remote_projects.js", "utf8");
 const exportResolver = source.slice(source.indexOf('  const exports = source.slice'), source.indexOf('  // These private symbols'));
 const adapter = source.slice(source.indexOf('  const legacyKeys ='), source.indexOf('  nativeCatalog ='));
-for (const mode of ["legacy", "windows", "20770", "26.1016"]) {
-  const legacy = mode === "legacy", windows = mode === "windows", current = mode === "26.1016";
+for (const mode of ["legacy", "windows", "20770", "26.1016", "26.1021"]) {
+  const legacy = mode === "legacy", windows = mode === "windows", updated = mode === "26.1021", current = mode === "26.1016" || updated;
   const atom = { scope: {}, resolve() {} };
   const main = { oldKeys: legacy ? atom : () => {}, oldList() {}, newKeys: atom, newList() {}, conversation: atom, router: atom, location: atom };
   if (windows) { main.windowsKeys = atom; main.windowsList = function(){return {conversationId:"test",workspaceKind:"project"}}; }
   if (current) { main.currentKeys = atom; main.currentList = function(e,t){return t.flatMap(t=>e().byKey.has(t)?[{conversationId:t,workspaceKind:"project"}]:[])}; }
-  const exports = current ? 'export{BXi as currentList,OZi as currentKeys,Fcr as conversation,CD as router,HE as location}' :
+  const exports = updated ? 'export{fMi as currentList,tK as currentKeys,hj as conversation,Dk as router,Ak as location}' : current ? 'export{BXi as currentList,OZi as currentKeys,Fcr as conversation,CD as router,HE as location}' :
     (windows ? "export{EF as windowsKeys,_F as windowsList," : "export{") + 'Gtr as oldKeys,yF as oldList,$Ki as newKeys,qB as newList,ek as conversation,eh as router,ch as location}';
   const picked = vm.runInNewContext(`(()=>{${exportResolver}${adapter}return {keys,list,router,location}})()`, {
     source:exports, main, imported: () => atom

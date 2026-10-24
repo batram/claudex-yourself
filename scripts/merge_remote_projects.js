@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.6
+// @version       1.4.7
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -11,6 +11,7 @@
 // @grant         none
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
+// @codex-tested  26.1021.3705.0
 // ==/ClaudexUserScript==
 const scriptId = "merge_remote_projects";
 const stateKey = Symbol.for("claudex-yourself.merge-remote-projects");
@@ -107,7 +108,11 @@ const loadNativeCatalog = async () => {
   // catalog symbols. Validate the old adapter before choosing it: a reused
   // minifier name can still be exported while referring to an unrelated function.
   const legacyKeys = main[alias("Gtr", false)];
-  const currentList = main[alias("BXi", false)];
+  // 26.1021 renamed the catalog and navigation bindings again.
+  const updatedList = main[alias("fMi", false)];
+  const updated = typeof updatedList === "function" && /conversationId/.test(String(updatedList)) &&
+    /workspaceKind/.test(String(updatedList)) && /\.byKey\.has/.test(String(updatedList));
+  const currentList = updated ? updatedList : main[alias("BXi", false)];
   const current = typeof currentList === "function" && /conversationId/.test(String(currentList)) &&
     /workspaceKind/.test(String(currentList)) && /\.byKey\.has/.test(String(currentList));
   // Preserve the separately tested Windows 26.1007.9446 adapter as well.
@@ -115,11 +120,11 @@ const loadNativeCatalog = async () => {
   const windows = !current && typeof main[windowsList] === "function" &&
     /conversationId/.test(String(main[windowsList])) && /workspaceKind/.test(String(main[windowsList]));
   const legacy = !current && !windows && Boolean(legacyKeys?.scope && legacyKeys?.resolve);
-  const keys = current ? main[alias("OZi")] : windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
+  const keys = updated ? main[alias("tK")] : current ? main[alias("OZi")] : windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
   const list = current ? currentList : main[alias(windows ? "_F" : legacy ? "yF" : "qB")];
-  const conversation = current ? main[alias("Fcr")] : windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
-  const router = current ? main[alias("CD")] : windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
-  const location = current ? main[alias("HE")] : windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
+  const conversation = updated ? main[alias("hj")] : current ? main[alias("Fcr")] : windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
+  const router = updated ? main[alias("Dk")] : current ? main[alias("CD")] : windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
+  const location = updated ? main[alias("Ak")] : current ? main[alias("HE")] : windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
   if (!keys?.scope || typeof list !== "function" || !router?.scope || !location?.scope)
     throw new Error("Codex sidebar catalog adapter is incompatible with this build.");
   nativeCatalog = {

@@ -8,6 +8,7 @@ const listeners = new Set();
 let accountId = 'account-one';
 let unavailable = false;
 let archived = false;
+let nativeExport = false;
 const local = {id:'local-thread',name:'Local latest',updatedAt:100};
 const remote = {id:'remote-thread',name:'Remote latest',updatedAt:200};
 const bootstrap = () => ({catalogHostIds:['local','remote-control:test'],catalogEntries:[
@@ -34,7 +35,9 @@ const context = vm.createContext({window,crypto:{randomUUID},URL,AbortSignal,set
   document:{scripts:[{src:'app://-/assets/index-fixture.js'}]},
   fetch:async url => ({text:async () => String(url).includes('index-fixture')
     ? "import './app-shared-fixture.js'; import './app-initial-fixture.js';"
-    : "import {historyApi as Ae} from './app-shared-fixture.js'; async function history(){return await Ae.safeGet(`/conversations`);}"})
+    : nativeExport
+      ? "async function history(){return await sv.safeGet(`/conversations`);} export{sv as historyApi}"
+      : "import {historyApi as Ae} from './app-shared-fixture.js'; async function history(){return await Ae.safeGet(`/conversations`);}"})
 });
 async function read() {
   const expectedAccount = accountId;
@@ -44,7 +47,7 @@ async function read() {
   }};`;
   return new vm.Script('(async()=>{'+source+'})()', {
     importModuleDynamically:async url => {
-      assert.equal(url, 'app://-/assets/app-shared-fixture.js');
+      assert.equal(url, nativeExport ? 'app://-/assets/app-initial-fixture.js' : 'app://-/assets/app-shared-fixture.js');
       return import('data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64'));
     }
   }).runInContext(context);
@@ -68,5 +71,11 @@ async function read() {
   result = await read();
   assert.equal(result.entries.length, 0, 'A successful empty history must clear archived/deleted cached entries');
   assert.equal(listeners.size, 0);
+  nativeExport = true;
+  window[Symbol.for('claudex-yourself.jump-list-history')] = undefined;
+  archived = false;
+  result = await read();
+  assert.equal(result.errors.length, 0, 'The new app-initial history export resolves');
+  assert.equal(result.entries.filter(e=>e.kind==='chatgpt').length, 1);
   console.log('Windows recent-chat adapter checks passed: live sources, host/account scoping, partial failures, cache invalidation, and request cleanup.');
 })().catch(error => {console.error(error);process.exitCode=1;});

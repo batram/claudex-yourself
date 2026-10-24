@@ -10,6 +10,7 @@
 // @grant         none
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
+// @codex-tested  26.1021.3705.0
 // ==/ClaudexUserScript==
 const scriptId = "remote_device_icons";
 const stateKey = Symbol.for("claudex-yourself.remote-device-icons");

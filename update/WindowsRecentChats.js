@@ -74,10 +74,17 @@ try {
     const localName = initial.match(/await ([\w$]+)\.safeGet\([`'"]\/conversations[`'"]/)?.[1];
     const sharedImport = [...initial.matchAll(/import\s*\{([^}]+)\}\s*from\s*[`'"]([^`'"]+)[`'"]/g)]
       .find(match => new URL(match[2], root).href === new URL(dependency, root).href);
+    const ownExports = initial.slice(initial.lastIndexOf('export{'));
+    const ownBinding = localName && ownExports.match(new RegExp('(?:,|\\{)' + localName.replaceAll('$', '\\$') + ' as ([^,}]+)'));
     const binding = sharedImport?.[1].split(',').map(e => e.trim().split(/\s+as\s+/)).find(e => e[1] === localName);
-    if (!binding) throw new Error('Codex history API binding is unavailable');
-    cache.apiModule = new URL(dependency, root).href;
-    cache.apiExport = binding[0];
+    if (ownBinding) {
+      cache.apiModule = new URL(initialPath, root).href;
+      cache.apiExport = ownBinding[1];
+    } else {
+      if (!binding) throw new Error('Codex history API binding is unavailable');
+      cache.apiModule = new URL(dependency, root).href;
+      cache.apiExport = binding[0];
+    }
     cache.apiRoot = root;
   }
   const shared = await import(cache.apiModule);
