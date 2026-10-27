@@ -15,11 +15,21 @@ internal static class ControllerReload
     internal static void StartWorker()
     {
         if (!OperatingSystem.IsWindows()) { BackgroundWorker.Start("reload-worker").Dispose(); return; }
+        StartDetachedWindows("reload-worker");
+    }
+
+    internal static int StartDetachedWindows(string commandName, params string[] arguments)
+    {
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        // Only internal command names/options are accepted by this launcher.
+        if (new[] { commandName }.Concat(arguments).Any(value => value.Length == 0 || value.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-')))
+            throw new ArgumentException("Detached worker arguments must be internal command names or options.");
         var executable = Environment.ProcessPath!;
         var command = new StringBuilder("\"" + executable + "\" ");
         if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
             command.Append('"').Append(typeof(Program).Assembly.Location).Append("\" ");
-        command.Append("reload-worker");
+        command.Append(commandName);
+        foreach (var argument in arguments) command.Append(' ').Append(argument);
         // Codex's Windows job forbids breakaway and kills descendants on transport
         // shutdown. WMI creates the hidden worker outside that job and its pipes.
         Directory.CreateDirectory(Program.StateDirectory);
@@ -27,7 +37,8 @@ internal static class ControllerReload
         File.WriteAllText(script, "$ErrorActionPreference = 'Stop'\n" +
             "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }\n" +
             "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '" + command.ToString().Replace("'", "''") + "'; ProcessStartupInformation = $startup }\n" +
-            "if ($result.ReturnValue -ne 0) { throw ('Detached reload launch failed: ' + $result.ReturnValue) }\n");
+            "if ($result.ReturnValue -ne 0) { throw ('Detached worker launch failed: ' + $result.ReturnValue) }\n" +
+            "Write-Output $result.ProcessId\n");
         try
         {
             var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
@@ -37,7 +48,7 @@ internal static class ControllerReload
             var error = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(15000)) { process.Kill(); throw new TimeoutException("Detached reload launch timed out"); }
             if (process.ExitCode != 0) throw new InvalidOperationException(error.GetAwaiter().GetResult());
-            output.GetAwaiter().GetResult();
+            return int.Parse(output.GetAwaiter().GetResult().Trim());
         }
         finally { File.Delete(script); }
     }
@@ -57,6 +68,11 @@ internal static class ControllerReload
         try
         {
             using var process = Process.GetProcessById(instance.Pid);
+            // A stale PID may now belong to a protected system process. Its
+            // public name is enough to reject it before querying StartTime or
+            // MainModule, which can fail with access denied for that process.
+            if (!process.ProcessName.Equals(Path.GetFileNameWithoutExtension(instance.Executable),
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) return false;
             return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == instance.Started &&
                 string.Equals(process.MainModule?.FileName, instance.Executable, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
         }
@@ -133,7 +149,7 @@ internal static class ControllerReload
         }
         catch (Exception error)
         {
-            Status(new { state = "failed", operationId, error = error.Message });
+            Status(new { state = "failed", operationId, error = error.Message, details = error.ToString() });
             return 1;
         }
     }

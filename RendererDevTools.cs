@@ -48,8 +48,13 @@ internal static class RendererDevTools
         var elapsed = System.Diagnostics.Stopwatch.StartNew();
         while (elapsed.Elapsed < timeout)
         {
-            if (await probe()) return;
-            await Task.Delay(interval);
+            var remaining = timeout - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
+            try { if (await probe().WaitAsync(remaining)) return; }
+            catch (TimeoutException) { break; }
+            remaining = timeout - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
+            await Task.Delay(remaining < interval ? remaining : interval);
         }
         throw new TimeoutException("The controlled Codex renderer did not become ready. Close Codex completely and reopen it through claudex-yourself; controlled launch has not been confirmed.");
     }
@@ -61,6 +66,26 @@ internal static class RendererDevTools
         if (!remote.TryGetProperty("value", out var value) || value.ValueKind != JsonValueKind.String)
             throw new InvalidOperationException($"Renderer returned no string value: {remote.GetRawText()}");
         return value.GetString()!;
+    }
+
+    internal static async Task<string> FindQuitTargetAsync(TimeSpan timeout)
+    {
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        using var deadline = new CancellationTokenSource(timeout);
+        using var http = new HttpClient { Timeout = timeout };
+        var targets = JsonSerializer.Deserialize<List<Target>>(await DevToolsLoopback.ReadMainTargetListAsync(http, deadline.Token)) ?? [];
+        var target = targets.Where(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
+                && IsUserscriptPage(item.Url) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
+            .OrderByDescending(item => IsMainCodexPage(item.Url)).FirstOrDefault()
+            ?? throw new InvalidOperationException("No Codex quit renderer is available.");
+        // Quit needs the preload bridge, not a completely loaded main document.
+        // A remaining local/remote chat window can supply it when main is closed.
+        deadline.Token.ThrowIfCancellationRequested();
+        var remaining = timeout - timer.Elapsed;
+        if (remaining <= TimeSpan.Zero) throw new OperationCanceledException(deadline.Token);
+        if (await EvaluateStringAsync("JSON.stringify(typeof window.electronBridge?.sendMessageFromView === 'function')", remaining, target.WebSocketDebuggerUrl)
+            != "true") throw new InvalidOperationException("Codex quit bridge is unavailable.");
+        return target.WebSocketDebuggerUrl;
     }
 
     public static async Task<object> EvaluateForInspectionAsync(string expression, int maxCharacters = 20_000)
@@ -202,10 +227,19 @@ internal static class RendererDevTools
         var matches = new List<object>();
         foreach (var script in scripts)
         {
-            var search = await session.SendAsync("Debugger.searchInContent", new { scriptId = script.Id, query, caseSensitive = false, isRegex = false });
-            if (search.GetProperty("result").GetArrayLength() == 0) continue;
-            var sourceResult = await session.SendAsync("Debugger.getScriptSource", new { scriptId = script.Id });
-            var source = sourceResult.GetProperty("scriptSource").GetString() ?? string.Empty;
+            string source;
+            try
+            {
+                var search = await session.SendAsync("Debugger.searchInContent", new { scriptId = script.Id, query, caseSensitive = false, isRegex = false });
+                if (search.GetProperty("result").GetArrayLength() == 0) continue;
+                var sourceResult = await session.SendAsync("Debugger.getScriptSource", new { scriptId = script.Id });
+                source = sourceResult.GetProperty("scriptSource").GetString() ?? string.Empty;
+            }
+            catch (InvalidOperationException exception) when (exception.Message.StartsWith("CDP Debugger.", StringComparison.Ordinal)
+                && exception.Message.Contains("No script for id", StringComparison.Ordinal))
+            {
+                continue; // Short-lived evaluated scripts can be collected during the search.
+            }
             for (var offset = 0; matches.Count < maxResults;)
             {
                 var index = source.IndexOf(query, offset, StringComparison.OrdinalIgnoreCase);
@@ -242,14 +276,18 @@ internal static class RendererDevTools
                 catch { await explicitSession.DisposeAsync(); throw; }
                 return explicitSession;
             }
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
-            var targets = JsonSerializer.Deserialize<List<Target>>(await DevToolsLoopback.ReadMainTargetListAsync(http)) ?? [];
-            var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
-                && IsMainCodexPage(item.Url) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
-                ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");
             var session = new Session(timeout);
-            await session._socket.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), session._timeout.Token);
-            return session;
+            try
+            {
+                using var http = new HttpClient { Timeout = timeout };
+                var targets = JsonSerializer.Deserialize<List<Target>>(await DevToolsLoopback.ReadMainTargetListAsync(http, session._timeout.Token)) ?? [];
+                var target = targets.FirstOrDefault(item => item.Type.Equals("page", StringComparison.OrdinalIgnoreCase)
+                    && IsMainCodexPage(item.Url) && !string.IsNullOrWhiteSpace(item.WebSocketDebuggerUrl))
+                    ?? throw new InvalidOperationException("No controlled Codex renderer is available. Start Codex with 'claudex-yourself launch'.");
+                await session._socket.ConnectAsync(new Uri(target.WebSocketDebuggerUrl), session._timeout.Token);
+                return session;
+            }
+            catch { await session.DisposeAsync(); throw; }
         }
 
         public async Task<JsonElement> EvaluateAsync(string expression)

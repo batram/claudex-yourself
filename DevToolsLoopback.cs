@@ -11,17 +11,36 @@ internal static class DevToolsLoopback
     ];
     private static Uri? _lastSuccessfulUri;
 
-    internal static async Task<string> ReadMainTargetListAsync(HttpClient client)
+    internal static async Task<string> ReadMainTargetListAsync(HttpClient client, CancellationToken cancellationToken = default)
     {
         var first = _lastSuccessfulUri ?? TargetListUris[0];
         var second = first == TargetListUris[0] ? TargetListUris[1] : TargetListUris[0];
-        foreach (var uri in new[] { first, second })
+        using var probes = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        // Race the two loopback families. A refused or stalled address must not
+        // hold up the one Chromium actually listens on, especially during startup.
+        var pending = new List<Task<(Uri Uri, string? Json)>> { ProbeAsync(first), ProbeAsync(second) };
+        while (pending.Count > 0)
+        {
+            var completed = await Task.WhenAny(pending);
+            pending.Remove(completed);
+            var result = await completed;
+            if (result.Json is not null)
+            {
+                _lastSuccessfulUri = result.Uri;
+                probes.Cancel();
+                return result.Json;
+            }
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        throw new InvalidOperationException("No main Codex renderer is available at the DevTools endpoint on either loopback address.");
+
+        async Task<(Uri, string?)> ProbeAsync(Uri uri)
         {
             try
             {
-                var json = await client.GetStringAsync(uri);
+                var json = await client.GetStringAsync(uri, probes.Token);
                 using var document = JsonDocument.Parse(json);
-                if (document.RootElement.ValueKind != JsonValueKind.Array) continue;
+                if (document.RootElement.ValueKind != JsonValueKind.Array) return (uri, null);
                 foreach (var target in document.RootElement.EnumerateArray())
                 {
                     if (target.ValueKind == JsonValueKind.Object
@@ -32,16 +51,15 @@ internal static class DevToolsLoopback
                         && url.ValueKind == JsonValueKind.String
                         && RendererDevTools.IsUserscriptPage(url.GetString()))
                     {
-                        _lastSuccessfulUri = uri;
-                        return json;
+                        return (uri, json);
                     }
                 }
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+            catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or JsonException)
             {
                 // The other loopback family may be the one Chromium bound.
             }
+            return (uri, null);
         }
-        throw new InvalidOperationException("No main Codex renderer is available at the DevTools endpoint on either loopback address.");
     }
 }

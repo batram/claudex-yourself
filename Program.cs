@@ -33,6 +33,18 @@ internal static class Program
                 "taskbar" => arguments.Length == 2
                     ? await RunWindowsTaskbarActionAsync(arguments[1].ToLowerInvariant())
                     : Fail("taskbar requires claudex, vanilla, restart, or quit."),
+                "taskbar-worker" => arguments.Length == 2
+                    ? await BackgroundWorker.RunAsync("taskbar-worker", async () =>
+                    {
+                        try { return await RunWindowsTaskbarActionAsync(arguments[1], detached: true); }
+                        catch (OperationCanceledException) { Console.WriteLine("Taskbar action cancelled."); return 0; }
+                        catch (Exception exception)
+                        {
+                            if (OperatingSystem.IsWindows()) WindowsJumpList.ShowError(exception.Message);
+                            throw;
+                        }
+                    })
+                    : Fail("taskbar-worker requires an action."),
                 "taskbar-status" => OperatingSystem.IsWindows()
                     ? await PrintTaskbarStatusAsync(arguments.Contains("--show-hidden"), arguments.Contains("--check-exit"))
                     : Fail("taskbar-status requires Windows."),
@@ -59,7 +71,8 @@ internal static class Program
                     : Fail("configure currently requires 'codex'."),
                 "status" => await StatusAsync(),
                 "install-shortcut" => InstallShortcut(),
-                "self-test" => SelfTest(),
+                "self-test" => arguments.Length == 3 && arguments[1] == "--detached-probe"
+                    ? LaunchReliabilityChecks.WriteDetachedProbe(arguments[2]) : SelfTest(),
                 "help" or "--help" or "-h" => Help(),
                 _ => Fail($"Unknown command '{command}'.")
             };
@@ -71,33 +84,48 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine($"claudex-yourself: {exception.Message}");
-            if (OperatingSystem.IsWindows() && arguments.FirstOrDefault() == "taskbar")
+            Console.Error.WriteLine($"claudex-yourself: {exception}");
+            if (OperatingSystem.IsWindows() && arguments.FirstOrDefault() is "launch" or "taskbar" or "taskbar-worker" or "launch-vanilla" or "native-shell" or "session-shell")
+            {
+                Directory.CreateDirectory(StateDirectory);
+                File.AppendAllText(Path.Combine(StateDirectory, "launch-errors.log"), $"{DateTime.UtcNow:O} {string.Join(' ', arguments.Take(2))}\n{exception}\n");
+            }
+            if (OperatingSystem.IsWindows() && arguments.FirstOrDefault() == "taskbar" && !Console.IsErrorRedirected)
                 WindowsJumpList.ShowError(exception.Message);
             return 1;
         }
     }
 
-    internal static int Launch(bool requireControlled = false)
+    internal static int Launch(bool requireControlled = false, CodexPackage? package = null, string? activationArguments = null)
     {
+        using var operation = OperatingSystem.IsWindows() ? WindowsLaunchOperation.Enter() : null;
+        var windowsMode = OperatingSystem.IsWindows() ? ReadWindowsCodexLaunchMode() : (CodexLaunchMode?)null;
         if (requireControlled && OperatingSystem.IsWindows())
         {
             // Windows can automatically activate the new package during registration.
             // That activation is vanilla; waiting for its DevTools endpoint cannot work.
-            var mode = ReadWindowsCodexLaunchMode();
+            var mode = windowsMode!.Value;
             EnsureControlledLaunchAsync(mode, async () =>
             {
                 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
-                var package = FindCodexPackage();
+                package ??= FindCodexPackage();
                 await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
-            }, async () => await CodexUpdates.WaitForExitAsync(FindCodexPackage().FamilyName, TimeSpan.FromSeconds(60))).GetAwaiter().GetResult();
+            }, async () => await CodexUpdates.WaitForExitAsync((package ??= FindCodexPackage()).FamilyName, TimeSpan.FromSeconds(60))).GetAwaiter().GetResult();
+            if (mode == CodexLaunchMode.Vanilla) windowsMode = CodexLaunchMode.Closed;
         }
-        if (IsCodexRunning())
+        else if (windowsMode == CodexLaunchMode.Vanilla)
+        {
+            throw new InvalidOperationException("Codex is running without DevTools. Use 'claudex-yourself taskbar claudex' to switch it through a normal quit, or close Codex completely before launching.");
+        }
+        if (windowsMode == CodexLaunchMode.Claudex || windowsMode is null && IsCodexRunning())
         {
             // Foreground activation cannot add DevTools to an existing process.
             // Never report a successful controlled launch without a usable renderer.
-            RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
-            var result = ActivateRunningCodex();
+            // Activation can recreate a main window that was closed to the tray.
+            // Waiting for that renderer before activation stalls reopening it.
+            var result = ActivateAndWaitForReadyAsync(
+                () => ActivateRunningCodex(package, activationArguments),
+                () => RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(20))).GetAwaiter().GetResult();
             if (result == 0)
             {
                 StartAutoloadWorker();
@@ -106,10 +134,17 @@ internal static class Program
             }
             return result;
         }
-        if (OperatingSystem.IsWindows()) return LaunchWindows();
+        if (OperatingSystem.IsWindows()) return LaunchWindows(package, activationArguments);
         if (OperatingSystem.IsMacOS()) return LaunchMacOS();
         if (OperatingSystem.IsLinux()) return LaunchLinux();
         return Fail("Controlled launch supports Windows, macOS and Linux.");
+    }
+
+    internal static async Task<int> ActivateAndWaitForReadyAsync(Func<int> activate, Func<Task> waitForReady)
+    {
+        var result = activate();
+        if (result == 0) await waitForReady();
+        return result;
     }
 
     internal static async Task EnsureControlledLaunchAsync(CodexLaunchMode mode, Func<Task> quitVanilla, Func<Task> waitForExit)
@@ -153,29 +188,19 @@ internal static class Program
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         var argument = DecodeNativeShellAction(encoded);
-        var result = Launch(requireControlled: true);
-        if (result != 0) return result;
-        var package = FindCodexPackage();
-        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-        ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", argument, ActivateOptions.None, out _), "activate native chat destination");
-        return 0;
+        return Launch(requireControlled: true, activationArguments: argument);
     }
 
     private static int RunSessionShellAction(string encoded)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
         var uri = WindowsRecentChats.DecodeSessionAction(encoded);
-        var result = Launch(requireControlled: true);
-        if (result != 0) return result;
-        var package = FindCodexPackage();
-        var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-        ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", uri, ActivateOptions.None, out _), "activate Codex session destination");
-        return 0;
+        return Launch(requireControlled: true, activationArguments: uri);
     }
 
-    private static int LaunchWindows()
+    private static int LaunchWindows(CodexPackage? package = null, string? destination = null)
     {
-        var package = FindCodexPackage();
+        package ??= FindCodexPackage();
         // Keep the packaged app's production identity so its native notification
         // activation targets the same Windows app and profile. Only add debugging arguments.
         var environment = BuildWindowsEnvironmentBlock(Array.Empty<string>());
@@ -214,74 +239,91 @@ internal static class Program
         }
 
         Console.WriteLine($"Started controlled Codex (PID {processId}).");
+        // A cold launch must finish creating its renderer before routing a chat.
+        // Reuse the package query, while warm opens route in their first activation.
+        if (destination is not null) ActivateRunningCodex(package, destination);
         StartAutoloadWorker();
         CodexUpdates.StartWatcher();
         return 0;
     }
 
-    private static async Task<int> RunWindowsTaskbarActionAsync(string action)
+    private static async Task<int> RunWindowsTaskbarActionAsync(string action, bool detached = false)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Taskbar actions currently support Windows only.");
         if (!WindowsTaskbarActions.Names.Contains(action)) throw new ArgumentException("Taskbar action must be claudex, vanilla, restart, or quit.");
-        Directory.CreateDirectory(StateDirectory);
-        FileStream operation;
-        try { operation = new FileStream(Path.Combine(StateDirectory, "taskbar-operation.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-        catch (IOException) { Console.WriteLine("Another Claudex taskbar action is already running."); return 0; }
-        using var lease = operation;
-        var package = FindCodexPackage();
-        var mode = ReadWindowsCodexLaunchMode();
-        await WindowsTaskbarActions.RunAsync(action, mode, async () =>
+        if (!detached && BackgroundWorker.IsInWindowsJob()
+            && WindowsTaskbarActions.RequiresQuit(action, ReadWindowsCodexLaunchMode()))
         {
-            try { await RendererDevTools.WaitForReadyAsync(TimeSpan.FromSeconds(5)); }
-            catch (TimeoutException)
+            var workerPid = ControllerReload.StartDetachedWindows("taskbar-worker", action);
+            Console.WriteLine($"Scheduled taskbar {action} in independent worker PID {workerPid}. Progress: {Path.Combine(StateDirectory, "worker-logs", "taskbar-worker.log")}");
+            return 0;
+        }
+        using var lease = WindowsLaunchOperation.Enter();
+        var timer = Stopwatch.StartNew();
+        var traceDirectory = Path.Combine(StateDirectory, "launch-logs");
+        Directory.CreateDirectory(traceDirectory);
+        var tracePath = Path.Combine(traceDirectory, $"taskbar-{DateTime.UtcNow:yyyyMMdd-HHmmss-fffffff}-{Environment.ProcessId}.log");
+        using var trace = new StreamWriter(tracePath, false, new UTF8Encoding(false)) { AutoFlush = true };
+        void Report(string phase)
+        {
+            var line = $"[{DateTime.UtcNow:O} +{timer.Elapsed.TotalSeconds:F3}s] {phase}";
+            Console.WriteLine(line);
+            trace.WriteLine(line);
+        }
+        Console.WriteLine($"Launch trace: {tracePath}");
+        Report($"Starting taskbar {action}; discovering Codex.");
+        try
+        {
+            var package = FindCodexPackage();
+            var mode = ReadWindowsCodexLaunchMode();
+            Report($"Detected {mode}; package {package.FullName}.");
+            await WindowsTaskbarActions.RunAsync(action, mode, async () =>
             {
-                // Restart/Quit should still work when the controlled renderer is unavailable.
-                if (!OperatingSystem.IsWindows()) throw;
+                string quitSocket;
+                try { quitSocket = await RendererDevTools.FindQuitTargetAsync(TimeSpan.FromSeconds(2)); }
+                catch (Exception exception) when (exception is HttpRequestException or WebSocketException or OperationCanceledException or InvalidOperationException)
+                {
+                    // Restart/Quit should still work when the controlled renderer is unavailable.
+                    if (!OperatingSystem.IsWindows()) throw;
+                    await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
+                    return;
+                }
+                // Once quit might have been sent, do not retry through another path:
+                // the user may be cancelling the app's confirmation.
+                await RendererDevTools.EvaluateStringAsync("(() => { if(typeof window.electronBridge?.sendMessageFromView !== 'function') throw Error('Codex quit bridge unavailable'); setTimeout(() => window.electronBridge.sendMessageFromView({type:'quit-app'}), 250); return JSON.stringify({requested:true}); })()", TimeSpan.FromSeconds(3), quitSocket);
+            }, async () =>
+            {
+                if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Taskbar actions require Windows.");
                 await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
-                return;
-            }
-            await RendererDevTools.EvaluateStringAsync("(() => { if(typeof window.electronBridge?.sendMessageFromView !== 'function') throw Error('Codex quit bridge unavailable'); setTimeout(() => window.electronBridge.sendMessageFromView({type:'quit-app'}), 250); return JSON.stringify({requested:true}); })()", TimeSpan.FromSeconds(3));
-        }, async () =>
-        {
-            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Taskbar actions require Windows.");
-            await WindowsTrayQuit.RequestAsync(Path.Combine(package.InstallLocation, "app", "ChatGPT.exe"));
-        }, async () =>
-        {
-            try { await CodexUpdates.WaitForExitAsync(package.FamilyName, TimeSpan.FromSeconds(60)); }
-            catch (TimeoutException exception)
+            }, async () =>
             {
-                throw new TimeoutException("Codex did not fully exit. Quit may have been cancelled, or a package process is still running. The taskbar action was cancelled.", exception);
-            }
-        }, () =>
+                try { await CodexUpdates.WaitForExitAsync(package.FamilyName, TimeSpan.FromSeconds(60)); }
+                catch (TimeoutException exception)
+                {
+                    throw new TimeoutException("Codex did not fully exit. Quit may have been cancelled, or a package process is still running. The taskbar action was cancelled.", exception);
+                }
+            }, () =>
+            {
+                if (Launch(package: package) != 0) throw new InvalidOperationException("Could not open Claudex.");
+            }, () =>
+            {
+                var manager = (IApplicationActivationManager)new ApplicationActivationManager();
+                ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _), "activate vanilla Codex");
+            }, Report);
+        }
+        catch (Exception exception)
         {
-            if (Launch() != 0) throw new InvalidOperationException("Could not open Claudex.");
-        }, () =>
-        {
-            var manager = (IApplicationActivationManager)new ApplicationActivationManager();
-            ThrowForHResult(manager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _), "activate vanilla Codex");
-        });
+            Report($"Action failed: {exception.Message}");
+            throw;
+        }
         Console.WriteLine($"Completed taskbar action: {action}.");
         return 0;
     }
 
     private static CodexLaunchMode ReadWindowsCodexLaunchMode()
     {
-        // An activation cannot remove Chromium switches from an existing process.
-        // Check its command line even when its renderer is not reachable.
-        const string script = "$ErrorActionPreference = 'Stop'; Get-CimInstance Win32_Process -Filter \"Name = 'ChatGPT.exe'\" | Where-Object { $_.ExecutablePath -like '*\\OpenAI.Codex_*\\app\\ChatGPT.exe' -and $_.CommandLine -notmatch '--type=' } | ForEach-Object { if ([string]::IsNullOrWhiteSpace($_.CommandLine)) { throw 'Could not read the Codex process command line.' }; $_.CommandLine }";
-        var start = new ProcessStartInfo("powershell.exe") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-        start.ArgumentList.Add("-NoProfile");
-        start.ArgumentList.Add("-NonInteractive");
-        start.ArgumentList.Add("-EncodedCommand");
-        start.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
-        using var query = Process.Start(start) ?? throw new InvalidOperationException("Could not inspect Codex's launch mode.");
-        var output = query.StandardOutput.ReadToEnd();
-        var error = query.StandardError.ReadToEnd();
-        query.WaitForExit();
-        if (query.ExitCode != 0) throw new InvalidOperationException($"Could not inspect Codex's launch mode: {error.Trim()}");
-        var commandLines = output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-        if (commandLines.Length == 0) return CodexLaunchMode.Closed;
-        return commandLines.Any(VanillaLaunch.HasDebuggingArguments) ? CodexLaunchMode.Claudex : CodexLaunchMode.Vanilla;
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        return WindowsCodexDiscovery.ReadLaunchMode();
     }
 
     private static async Task<int> PrintTaskbarStatusAsync(bool showHidden, bool checkExit)
@@ -684,6 +726,7 @@ internal static class Program
         UpdateChecks.RunAsync().GetAwaiter().GetResult();
         VanillaLaunchChecks.RunAsync().GetAwaiter().GetResult();
         WindowsTaskbarActionsChecks.RunAsync().GetAwaiter().GetResult();
+        LaunchReliabilityChecks.RunAsync().GetAwaiter().GetResult();
         TrayIconReadinessChecks.RunAsync().GetAwaiter().GetResult();
         WindowsNativeJumpListChecks.Run();
         WindowsRecentChatsChecks.Run();
@@ -735,7 +778,7 @@ internal static class Program
         : OperatingSystem.IsMacOS() ? MacCodexApp.IsDesktopExecutable(path)
         : OperatingSystem.IsLinux() && LinuxCodexApp.ReadExecutable(path) is not null;
 
-    private static int ActivateRunningCodex()
+    private static int ActivateRunningCodex(CodexPackage? package = null, string? activationArguments = null)
     {
         if (OperatingSystem.IsLinux())
         {
@@ -760,10 +803,10 @@ internal static class Program
         if (!OperatingSystem.IsWindows())
             return Fail("Foreground activation supports Windows, macOS, and Linux.");
 
-        var package = FindCodexPackage();
+        package ??= FindCodexPackage();
         var activationManager = (IApplicationActivationManager)new ApplicationActivationManager();
         ThrowForHResult(
-            activationManager.ActivateApplication($"{package.FamilyName}!App", null, ActivateOptions.None, out _),
+            activationManager.ActivateApplication($"{package.FamilyName}!App", activationArguments, ActivateOptions.None, out _),
             "activate the running Codex application");
         Console.WriteLine("Activated the running Codex application.");
         return 0;
@@ -771,18 +814,8 @@ internal static class Program
 
     private static CodexPackage FindCodexPackage()
     {
-        using var powershell = Process.Start(new ProcessStartInfo("powershell.exe",
-            "-NoProfile -NonInteractive -Command \"$p = Get-AppxPackage -Name OpenAI.Codex | Sort-Object Version -Descending | Select-Object -First 1; if ($p) { Write-Output ($p.PackageFullName + '|' + $p.PackageFamilyName + '|' + $p.InstallLocation) }\"")
-        {
-            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true
-        }) ?? throw new InvalidOperationException("Could not query the installed Codex package.");
-        var output = powershell.StandardOutput.ReadToEnd().Trim();
-        var error = powershell.StandardError.ReadToEnd().Trim();
-        powershell.WaitForExit();
-        if (powershell.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) throw new InvalidOperationException($"Could not locate the installed Codex package. {error}".Trim());
-        var parts = output.Split('|', 3);
-        if (parts.Length != 3 || parts.Any(string.IsNullOrWhiteSpace)) throw new InvalidOperationException($"Unexpected Codex package information: {output}");
-        return new CodexPackage(parts[0], parts[1], parts[2]);
+        if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+        return WindowsCodexDiscovery.FindPackage();
     }
 
     private static int Help()
@@ -812,7 +845,7 @@ internal static class Program
         [property: System.Text.Json.Serialization.JsonPropertyName("title")] string Title,
         [property: System.Text.Json.Serialization.JsonPropertyName("url")] string Url,
         [property: System.Text.Json.Serialization.JsonPropertyName("webSocketDebuggerUrl")] string WebSocketDebuggerUrl);
-    private sealed record CodexPackage(string FullName, string FamilyName, string InstallLocation);
+    internal sealed record CodexPackage(string FullName, string FamilyName, string InstallLocation);
 
     [Flags] private enum ActivateOptions : uint { None = 0 }
     [Flags] private enum ThreadAccess : uint { SuspendResume = 0x0002 }

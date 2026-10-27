@@ -7,6 +7,13 @@ namespace ClaudexYourself;
 internal static class BackgroundWorker
 {
     private static readonly object StartGate = new();
+    internal static bool IsInWindowsJob()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        if (!IsProcessInJob(new IntPtr(-1), IntPtr.Zero, out var inJob))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return inJob;
+    }
     internal static Process Start(string command, params string[] arguments)
     {
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the worker executable.");
@@ -61,6 +68,9 @@ internal static class BackgroundWorker
         catch (Exception exception) { writer.WriteLine($"{DateTime.UtcNow:O} {exception}"); return 1; }
     }
     [DllImport("kernel32.dll")] private static extern IntPtr GetStdHandle(int kind);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsProcessInJob(IntPtr process, IntPtr job, [MarshalAs(UnmanagedType.Bool)] out bool inJob);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetHandleInformation(IntPtr handle, out uint flags);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetHandleInformation(IntPtr handle, uint mask, uint flags);
 }

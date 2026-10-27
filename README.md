@@ -114,6 +114,8 @@ Windows Codex deliberately stays running after its last window closes. Vanilla m
 
 `claudex-yourself taskbar-status` reports the detected mode and relevant visible tray controls. Add `--show-hidden` to reveal the notification overflow, or `--check-exit` to open and verify the Codex-owned Exit item without invoking it.
 
+Launches and taskbar actions share an operation lock, including recent-chat activation. A second request waits for the current operation instead of racing package-debug registration or being silently dropped. Each taskbar action writes a timestamped trace under `%APPDATA%\claudex-yourself\launch-logs`, with elapsed times for discovery, quit, package exit, activation, and renderer readiness. If a taskbar command needs to quit Codex while running inside a Windows process job, it schedules an independent worker first; the command returns the worker PID and its log path. This keeps the relaunch alive when Codex closes its own child-process job. It still closes any chat hosted by the app being restarted.
+
 Background autoload, source-update, Windows-update, and macOS-relaunch workers write diagnostic logs under the per-user state directory's `worker-logs/`. Their output streams are independent of the launcher so captured CLI commands can finish while workers keep running.
 
 The CLI equivalents are `claudex-yourself taskbar claudex|vanilla|restart|quit`; `launch-vanilla` remains an alias for the vanilla action. The plain `launch` command retains its controlled-launch readiness checks and does not switch a running vanilla session. Both modes share Codex's normal profile; vanilla mode does not erase saved preferences or undo persistent changes made by scripts.

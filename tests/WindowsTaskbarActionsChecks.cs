@@ -4,6 +4,25 @@ internal static class WindowsTaskbarActionsChecks
 {
     internal static async Task RunAsync()
     {
+        // Tray-only Codex can have no main renderer until activation recreates it.
+        var reopenCalls = new List<string>();
+        await Program.ActivateAndWaitForReadyAsync(
+            () => { reopenCalls.Add("activate"); return 0; },
+            () => { reopenCalls.Add("ready"); return Task.CompletedTask; });
+        if (!reopenCalls.SequenceEqual(new[] { "activate", "ready" }))
+            throw new Exception("Reopening must activate before waiting for a renderer.");
+        var probed = false;
+        var failedActivation = await Program.ActivateAndWaitForReadyAsync(() => 1,
+            () => { probed = true; return Task.CompletedTask; });
+        if (failedActivation != 1 || probed) throw new Exception("Failed activation must not wait for readiness.");
+        try
+        {
+            await Program.ActivateAndWaitForReadyAsync(() => 0,
+                () => Task.FromException(new TimeoutException("Renderer unavailable")));
+            throw new Exception("Activation without a ready renderer must not report success.");
+        }
+        catch (TimeoutException) { }
+
         foreach (var mode in Enum.GetValues<CodexLaunchMode>())
         {
             var calls = new List<string>();

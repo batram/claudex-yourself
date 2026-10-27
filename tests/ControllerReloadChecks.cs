@@ -11,6 +11,8 @@ internal static class ControllerReloadChecks
         Assert(ControllerReload.DiskBuildId(typeof(Program).Assembly.Location) == ControllerReload.BuildId, "disk identity matches loaded module");
         Assert(ControllerReload.IsAlive(current), "current process identity");
         Assert(!ControllerReload.IsAlive(current with { Started = 1 }), "PID reuse is rejected");
+        if (OperatingSystem.IsWindows())
+            Assert(!ControllerReload.IsAlive(current with { Pid = 4, Started = 1 }), "a protected system process reusing a stale PID cannot block reload");
         Assert(!ControllerReload.Verified([current], [replacement], current.Executable, current.BuildId), "live old process prevents success");
         Assert(!ControllerReload.Verified([old], [], current.Executable, current.BuildId), "missing replacement prevents success");
         Assert(!ControllerReload.Verified([old], [replacement with { BuildId = "old" }], current.Executable, current.BuildId), "old build prevents success even at same version");
