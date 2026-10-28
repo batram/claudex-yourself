@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.9
+// @version       1.4.10
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -181,6 +181,40 @@ let lastStatus = { projects: 0, sessions: 0, hiddenRemoteProjects: 0 };
 const panels = new Map();
 const hidden = new Set();
 const hostIcons = new Map();
+let releaseNavigation;
+const navigateFromGroup = (session, projectId, row) => {
+  releaseNavigation?.();
+  const sidebar = row.closest("[data-app-action-sidebar-scroll]");
+  if (!sidebar) return nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+  const top = sidebar.scrollTop;
+  let frame, expiry, mutations;
+  const stop = () => {
+    cancelAnimationFrame(frame); clearTimeout(expiry); mutations?.disconnect();
+    for (const type of ["wheel", "touchstart", "pointerdown", "keydown", "click"]) sidebar.removeEventListener(type, stop, true);
+    if (releaseNavigation === stop) releaseNavigation = undefined;
+  };
+  const preserve = () => {
+    // Codex's active-thread revealer only searches native rows (usually
+    // Recents). Use its own cancellation event after the route commits and
+    // before its ResizeObserver can reveal the duplicate native entry.
+    window.dispatchEvent(new Event("codex-sidebar-thread-reveal-cancel"));
+    sidebar.scrollTop = top;
+  };
+  releaseNavigation = stop;
+  for (const type of ["wheel", "touchstart", "pointerdown", "keydown", "click"]) sidebar.addEventListener(type, stop, {capture:true, passive:true});
+  mutations = new MutationObserver(preserve);
+  mutations.observe(sidebar, {childList:true, subtree:true, attributes:true,
+    attributeFilter:["data-app-action-sidebar-thread-active"]});
+  // Cover effect installation without changing global scrolling APIs. Keep
+  // observing delayed row mounts, but yield immediately to user interaction.
+  frame = requestAnimationFrame(() => { preserve(); frame = requestAnimationFrame(preserve); });
+  expiry = setTimeout(stop, 2000);
+  try {
+    const result = nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+    if (result?.catch) result.catch(error => { stop(); console.warn("[Claudex merge remote projects] navigation failed", error); });
+    return result;
+  } catch (error) { stop(); throw error; }
+};
 const observe = () => observer?.observe(document.body, {
   childList: true, subtree: true, characterData: true, attributes: true,
   attributeFilter: ["data-app-action-sidebar-project-collapsed", "data-app-action-sidebar-thread-active", "data-app-action-sidebar-thread-title", "data-app-action-sidebar-thread-selected", "class"]
@@ -233,11 +267,11 @@ const makeCopy = (source, session, projectId) => {
   for (const type of ["click", "dblclick", "contextmenu"]) copy.addEventListener(type, event => {
     event.preventDefault(); event.stopPropagation();
     if (type === "click" && !event.target.closest("button") && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
-      nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+      navigateFromGroup(session, projectId, copy);
       return;
     }
     if (!source.isConnected) {
-      if (type === "click" && !event.target.closest("button")) nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+      if (type === "click" && !event.target.closest("button")) navigateFromGroup(session, projectId, copy);
       schedule(); return;
     }
     let node = event.target;
@@ -280,7 +314,7 @@ const makeCatalogRow = (session, projectId) => {
   row.append(title, iconSlot);
   row.addEventListener("click", event => {
     event.preventDefault(); event.stopPropagation();
-    nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
+    navigateFromGroup(session, projectId, row);
   });
   return row;
 };
@@ -412,6 +446,7 @@ const refresh = () => {
 };
 const schedule = () => { clearTimeout(timer); timer = setTimeout(refresh, 100); };
 const uninstall = () => {
+  releaseNavigation?.();
   observer?.disconnect(); observer = undefined; clearTimeout(timer);
   catalogSubscription?.(); catalogSubscription = undefined;
   for (const [id, panel] of panels) removePanel(id, panel);

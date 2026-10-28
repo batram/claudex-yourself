@@ -123,15 +123,32 @@ async function checkNavigation() {
       const id = row.dataset.claudexSessionId, host = row.dataset.claudexHostId;
       row.scrollIntoView({ block: "center" });
       const before = scroll.scrollTop;
-      row.click();
-      await settle();
+      let cancellations = 0;
+      const canceled = () => cancellations++;
+      window.addEventListener("codex-sidebar-thread-reveal-cancel", canceled);
+      try {
+        row.click();
+        // Observe multiple paints, not just one final offset: native reveal
+        // runs through a ResizeObserver after route effects and row mounts.
+        for (let frame = 0; frame < 12; frame++) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          check(Math.abs(scroll.scrollTop - before) < 1, "Grouped navigation stays at the clicked entry during delayed rendering");
+        }
+        check(cancellations > 0, "Grouped navigation cancels the native Recents revealer");
+      } finally { window.removeEventListener("codex-sidebar-thread-reveal-cancel", canceled); }
       controller.refresh();
       check(Math.abs(scroll.scrollTop - before) < 1, "Grouped navigation preserves sidebar scroll");
       check([...panel.querySelectorAll("[data-claudex-merged-active=true]")].some(element =>
         element.dataset.claudexSessionId === id && element.dataset.claudexHostId === host &&
         element.getAttribute("aria-current") === "page"), "Clicked grouped entry is highlighted");
+      scroll.dispatchEvent(new WheelEvent("wheel", {deltaY:30,bubbles:true}));
+      scroll.scrollTop += 30;
+      const moved = scroll.scrollTop;
+      controller.refresh();
+      await new Promise(resolve => setTimeout(resolve, 100));
+      check(Math.abs(scroll.scrollTop - moved) < 1, "User scrolling immediately releases navigation protection");
     }
-    return { copiedRowNavigation: true, compactRowNavigation: true, scrollPreserved: true };
+    return { copiedRowNavigation: true, compactRowNavigation: true, scrollPreserved: true, nativeRevealCanceled: true, userScrollReleased: true };
   } finally {
     const candidates = [...document.querySelectorAll("[data-app-action-sidebar-thread-row],[data-claudex-merged-remote=row]")];
     const back = candidates.find(element =>
