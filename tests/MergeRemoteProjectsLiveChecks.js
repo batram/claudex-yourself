@@ -59,9 +59,16 @@ async function checkPagination() {
       });
       check(Math.max(...iconPositions) - Math.min(...iconPositions) < 1,
         "Copied, compact, and status-bearing rows share a device icon column");
-      for (const slot of panel.querySelectorAll(".claudex-merged-device-slot")) {
-        check(parseFloat(getComputedStyle(slot).marginInlineEnd) > 0,
-          "Userscript-owned slot margin is present without a generated utility class");
+      for (const row of rows().filter(row => !row.hidden)) {
+        const slot = row.querySelector(".claudex-merged-device-slot").getBoundingClientRect();
+        check(row.querySelectorAll(".claudex-merged-device-slot").length === 1,
+          "Each copied or catalog row owns exactly one device slot");
+        for (const status of row.querySelectorAll(".claudex-merged-row-status,[role=status],button")) {
+          const box = status.getBoundingClientRect();
+          if (!box.width || !box.height) continue;
+          check(slot.right <= box.left + 1 || slot.left >= box.right - 1,
+            "Device column never overlaps working/unread status or hover controls");
+        }
       }
     };
     checkIconColumn();

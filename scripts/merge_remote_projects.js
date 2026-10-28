@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.8
+// @version       1.4.9
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -188,6 +188,11 @@ const observe = () => observer?.observe(document.body, {
 const removePanel = (id, panel) => { panel.element.remove(); panels.delete(id); };
 const makeCopy = (source, session, projectId) => {
   const copy = source.cloneNode(true);
+  // Remember identities before normalizing layout. DOM offsets are not an
+  // event routing contract: owned icons and native status spacers change them.
+  const originals = new WeakMap();
+  const sourceNodes = [source, ...source.querySelectorAll("*")];
+  [copy, ...copy.querySelectorAll("*")].forEach((node, index) => originals.set(node, sourceNodes[index]));
   copy.dataset.claudexMergedRemote = "row";
   copy.dataset.claudexSessionId = session.conversationId;
   copy.dataset.claudexHostId = session.hostId;
@@ -196,20 +201,32 @@ const makeCopy = (source, session, projectId) => {
     for (const attribute of [...element.attributes]) {
       if (attribute.name === "id" || attribute.name.startsWith("data-app-action-") ||
           attribute.name.startsWith("data-sidebar-") || attribute.name.startsWith("aria-describedby") ||
-          attribute.name === "aria-labelledby" || attribute.name === "draggable") element.removeAttribute(attribute.name);
+          attribute.name === "aria-labelledby" || attribute.name === "draggable" ||
+          attribute.name === "data-claudex-device-layout" || attribute.name === "data-claudex-device-part") element.removeAttribute(attribute.name);
     }
   }
   const hostId = source.dataset.appActionSidebarThreadHostId || "remote";
   const info = threadInfo(source);
   copy.title = `${source.dataset.appActionSidebarThreadTitle || source.textContent.trim()}\nRemote: ${hostId}\n${info?.threadSummary?.cwd || info?.displayCwd || ""}`;
-  // Newer native project rows omit the environment glyph entirely. Grouped
-  // rows still need a host slot, including when custom device icons are off.
-  if (!copy.querySelector("svg.icon-2xs.no-drag,[aria-label='Remote session'] svg")) {
+  // Own the grouped row's geometry, regardless of native status/hover layout.
+  // Never inherit an icon that shares Codex's absolute status/action rail.
+  {
+    const glyph = copy.querySelector("svg.icon-2xs.no-drag,[aria-label='Remote session'] svg");
     const slot = document.createElement("span");
     slot.className = "claudex-merged-device-slot";
     slot.setAttribute("aria-label", "Remote session");
     slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
-    copy.firstElementChild?.append(slot);
+    if (glyph) slot.replaceChildren(glyph.cloneNode(true));
+    copy.querySelectorAll("[data-claudex-device-slot],.claudex-merged-device-slot,[data-testid=task-row-environment-remote]").forEach(node => node.remove());
+    if (glyph?.isConnected || copy.contains(glyph)) glyph.remove();
+    const rail = copy.firstElementChild;
+    rail.classList.add("claudex-merged-row-layout");
+    for (const child of rail.children) {
+      if (child.querySelector("[data-thread-title]")) child.classList.add("claudex-merged-row-title");
+      else if (child.matches("[data-hover-card-open-immediately]")) child.classList.add("claudex-merged-row-status");
+      else child.classList.add("claudex-merged-row-spacer");
+    }
+    rail.append(slot);
   }
   // Dispatch on the still-mounted original so React retains navigation, archive,
   // multi-selection, and context menu handlers with the original host identity.
@@ -223,11 +240,9 @@ const makeCopy = (source, session, projectId) => {
       if (type === "click" && !event.target.closest("button")) nativeCatalog.navigate(session.conversationId, session.hostId, projectId);
       schedule(); return;
     }
-    const indices = [];
     let node = event.target;
-    while (node && node !== copy) { indices.unshift([...node.parentNode.childNodes].indexOf(node)); node = node.parentNode; }
-    let target = source;
-    for (const index of indices) target = target.childNodes[index] || target;
+    while (node && !originals.has(node)) node = node.parentElement;
+    const target = originals.get(node) || source;
     target.dispatchEvent(new MouseEvent(type, {
       bubbles: true, cancelable: true, view: window, button: event.button, buttons: event.buttons,
       clientX: event.clientX, clientY: event.clientY, ctrlKey: event.ctrlKey, metaKey: event.metaKey,
@@ -418,10 +433,18 @@ const install = async () => {
   style.textContent += ".claudex-merged-catalog-row{border:0;text-align:start}.claudex-merged-catalog-title{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}";
   // Userscript-only utility classes may not exist in Codex's generated CSS.
   // Own the slot geometry so native-row remounts cannot expose a missing margin.
-  style.textContent += ".claudex-merged-device-slot{display:flex;align-items:center;justify-content:center;flex-shrink:0;min-width:calc(var(--spacing,4px)*5);height:calc(var(--spacing,4px)*5);margin-inline-end:calc(var(--spacing,4px)*.75)}";
-  // Keep the host in a stable rightmost slot, even when a native status badge
-  // is present. CSS ordering preserves React's DOM and forwarded event paths.
-  style.textContent += ".claudex-merged-remote [data-claudex-merged-remote=row] [data-hover-card-open-immediately]>span:has([data-testid=task-row-environment-remote]){order:1}";
+  // A fixed device column and a separate 60px status/action column are shared
+  // by cloned and catalog rows. Hover/focus can replace status with controls
+  // without moving or covering the device. No generated utility dependencies.
+  style.textContent += `
+    .claudex-merged-row-layout,.claudex-merged-catalog-row{display:grid!important;grid-template-columns:minmax(0,1fr) 20px 60px;align-items:center;column-gap:0}
+    .claudex-merged-row-title,.claudex-merged-catalog-title{grid-column:1;grid-row:1;min-width:0}
+    .claudex-merged-device-slot{display:flex;grid-column:2;grid-row:1;align-items:center;justify-content:center;width:20px;height:20px;pointer-events:none}
+    .claudex-merged-device-slot svg{width:14px;height:14px}
+    .claudex-merged-row-spacer{display:none!important}
+    .claudex-merged-row-status{grid-column:3;grid-row:1;position:static!important;min-width:0!important;width:60px;height:20px!important;padding:0 6px!important;gap:4px!important}
+    .claudex-merged-row-status>span:empty{display:none}
+  `;
   observer = new MutationObserver(schedule);
   try {
     if (!nativeCatalog) await loadNativeCatalog();

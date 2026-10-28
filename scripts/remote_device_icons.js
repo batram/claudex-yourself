@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Remote device icons
 // @id            remote_device_icons
-// @version       1.0.4
+// @version       1.0.5
 // @description   Choose preset or uploaded icons for each remote device in native and grouped chat lists.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -54,6 +54,8 @@ const getIcon = device => {
 const getDevices = () => [...devices.values()].map(device => ({ ...device,
   choice: preferences[device.id]?.choice || "auto", icon: getIcon(device), error: errors.get(device.id) || "" }));
 const restore = root => {
+  for (const node of root.querySelectorAll("[data-claudex-device-layout]")) node.removeAttribute("data-claudex-device-layout");
+  for (const node of root.querySelectorAll("[data-claudex-device-part]")) node.removeAttribute("data-claudex-device-part");
   for (const slot of root.querySelectorAll("[data-claudex-device-slot]")) slot.remove();
   for (const image of root.querySelectorAll(".claudex-device-icon-image")) image.remove();
   for (const icon of root.querySelectorAll("svg[data-claudex-device-icon]")) {
@@ -66,7 +68,7 @@ const repaint = () => {
   observer.disconnect();
   for (const row of document.querySelectorAll(rows)) {
     const id = row.dataset.appActionSidebarThreadHostId || row.dataset.claudexHostId;
-    if (!isRemote(id)) continue;
+    if (!isRemote(id)) { restore(row); continue; }
     const props = propsAbove(row);
     const cwd = props.threadSummary?.cwd || props.displayCwd || row.title?.split("\n").at(-1);
     const previous = devices.get(id);
@@ -77,18 +79,29 @@ const repaint = () => {
     const device = { id, name, os };
     devices.set(id, device);
     let source = row.querySelector("svg.icon-2xs.no-drag") || row.querySelector("[aria-label='Remote session'] svg");
-    // 26.1023 no longer supplies a globe on every native remote project row.
-    // Add only our own removable slot; React retains ownership of its children.
-    if (!source && row.matches("[data-app-action-sidebar-thread-row]")) {
+    // Use the same explicit title/device/status columns as grouped rows.
+    // Leave React's children in place; mark their roles and own only our slot.
+    if (row.matches("[data-app-action-sidebar-thread-row]")) {
       const rail = row.firstElementChild;
       if (rail?.querySelector("[data-thread-title]")) {
-        const slot = document.createElement("span");
-        slot.dataset.claudexDeviceSlot = "true";
-        slot.setAttribute("aria-label", "Remote session");
-        slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
-        // The last child reserves room for the absolute hover/focus controls.
-        // Keep the device before it so the controls never cover the icon.
-        rail.insertBefore(slot, rail.lastElementChild);
+        let slot = rail.querySelector(":scope > [data-claudex-device-slot]");
+        if (!slot) {
+          slot = document.createElement("span");
+          slot.dataset.claudexDeviceSlot = "true";
+          slot.setAttribute("aria-label", "Remote session");
+          slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
+          rail.append(slot);
+        }
+        rail.dataset.claudexDeviceLayout = "true";
+        for (const child of rail.children) {
+          if (child === slot) continue;
+          child.dataset.claudexDevicePart = child.querySelector("[data-thread-title]") ? "title" :
+            child.matches("[data-hover-card-open-immediately]") ? "status" : "spacer";
+        }
+        // Hide only the original environment glyph, never a status spinner.
+        for (const glyph of rail.querySelectorAll("svg.icon-2xs.no-drag,[data-testid=task-row-environment-remote]")) {
+          if (!slot.contains(glyph)) glyph.dataset.claudexDevicePart = "native";
+        }
         source = slot.querySelector("svg");
       }
     }
@@ -228,8 +241,12 @@ const install = () => {
   style = document.createElement("style");
   style.textContent = `svg[data-claudex-device-icon]{background:var(--claudex-device-image) center/contain no-repeat}
     svg[data-claudex-device-icon]>*{visibility:hidden}
-    [data-claudex-device-slot]{display:flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px;margin-inline-start:3px;pointer-events:none}
-    [data-claudex-device-slot]>svg{width:100%;height:100%}`;
+    [data-claudex-device-layout]{display:grid!important;grid-template-columns:minmax(0,1fr) 20px 60px;align-items:center;column-gap:0}
+    [data-claudex-device-part=title]{grid-column:1;grid-row:1;min-width:0}
+    [data-claudex-device-part=spacer],[data-claudex-device-part=native]{display:none!important}
+    [data-claudex-device-part=status]{grid-column:3;grid-row:1;position:static!important;min-width:0!important;width:60px;height:20px!important;padding:0 6px!important;gap:4px!important}
+    [data-claudex-device-slot]{display:flex;grid-column:2;grid-row:1;align-items:center;justify-content:center;width:20px;height:20px;pointer-events:none}
+    [data-claudex-device-slot]>svg{width:14px;height:14px}`;
   document.head.append(style);
   observer = new MutationObserver(schedule); repaint();
   window.addEventListener("storage", receivePreferences);

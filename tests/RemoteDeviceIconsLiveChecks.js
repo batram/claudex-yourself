@@ -16,6 +16,13 @@ async function exerciseIcons() {
     check(row.querySelector("svg.icon-2xs.no-drag,[aria-label='Remote session'] svg"),
       "Native remote rows retain a device glyph when Codex omits its globe");
     check(row.querySelectorAll("[data-claudex-device-slot]").length <= 1, "Native fallback slots are not duplicated");
+    const slot = row.querySelector("[data-claudex-device-slot]").getBoundingClientRect();
+    for (const status of row.querySelectorAll("[data-claudex-device-part=status],[role=status],button")) {
+      const box = status.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      check(slot.right <= box.left + 1 || slot.left >= box.right - 1,
+        "Recents device icon never overlaps working status or hover controls");
+    }
   }
   const imagesFor = () => [...document.querySelectorAll("svg[data-claudex-device-icon]")]
     .filter(svg => svg.dataset.claudexDeviceIcon === device.id)
@@ -55,6 +62,8 @@ async function exerciseIcons() {
     controller.uninstall();
     check(document.querySelectorAll(".claudex-device-icon-image,svg[data-claudex-device-icon]").length === 0, "Uninstall restores native SVGs and removes all overlays");
     check(document.querySelectorAll("[data-claudex-device-slot]").length === 0, "Uninstall removes owned fallback slots");
+    check(document.querySelectorAll("[data-claudex-device-layout],[data-claudex-device-part]").length === 0,
+      "Uninstall restores React's original row layout");
     check(getComputedStyle(currentRow()).display === "grid", "Settings remain styled while disabled");
     controller.install();
     check(imagesFor().length > 0, "Reinstall restores saved choices");
