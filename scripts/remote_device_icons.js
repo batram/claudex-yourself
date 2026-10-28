@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Remote device icons
 // @id            remote_device_icons
-// @version       1.0.1
+// @version       1.0.2
 // @description   Choose preset or uploaded icons for each remote device in native and grouped chat lists.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -11,6 +11,7 @@
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
 // @codex-tested  26.1021.3705.0
+// @codex-tested  26.1023.6123.0
 // ==/ClaudexUserScript==
 const scriptId = "remote_device_icons";
 const stateKey = Symbol.for("claudex-yourself.remote-device-icons");
@@ -53,6 +54,7 @@ const getIcon = device => {
 const getDevices = () => [...devices.values()].map(device => ({ ...device,
   choice: preferences[device.id]?.choice || "auto", icon: getIcon(device), error: errors.get(device.id) || "" }));
 const restore = root => {
+  for (const slot of root.querySelectorAll("[data-claudex-device-slot]")) slot.remove();
   for (const image of root.querySelectorAll(".claudex-device-icon-image")) image.remove();
   for (const icon of root.querySelectorAll("svg[data-claudex-device-icon]")) icon.removeAttribute("data-claudex-device-icon");
 };
@@ -71,7 +73,20 @@ const repaint = () => {
       ({ apple: "Mac", linux: "Linux", windows: "Windows" }[os]) || previous?.name || `Remote ${decodeURIComponent(id.split(":").at(-1)).slice(0,24)}`;
     const device = { id, name, os };
     devices.set(id, device);
-    const source = row.querySelector("svg.icon-2xs.no-drag") || row.querySelector("[aria-label='Remote session'] svg");
+    let source = row.querySelector("svg.icon-2xs.no-drag") || row.querySelector("[aria-label='Remote session'] svg");
+    // 26.1023 no longer supplies a globe on every native remote project row.
+    // Add only our own removable slot; React retains ownership of its children.
+    if (!source && row.matches("[data-app-action-sidebar-thread-row]")) {
+      const rail = row.firstElementChild;
+      if (rail?.querySelector("[data-thread-title]")) {
+        const slot = document.createElement("span");
+        slot.dataset.claudexDeviceSlot = "true";
+        slot.setAttribute("aria-label", "Remote session");
+        slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
+        rail.append(slot);
+        source = slot.querySelector("svg");
+      }
+    }
     if (!source) continue;
     const parent = source.parentElement;
     const src = getIcon(device);
@@ -204,6 +219,7 @@ const install = () => {
   uninstall();
   style = document.createElement("style");
   style.textContent = `svg[data-claudex-device-icon]{opacity:0!important}
+    [data-claudex-device-slot]{display:flex;align-items:center;justify-content:center;flex:none;width:20px;height:20px;margin-inline-end:3px}
     :has(>svg[data-claudex-device-icon]){position:relative}
     .claudex-device-icon-image{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}`;
   document.head.append(style);

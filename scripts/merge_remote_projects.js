@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Merge remote projects
 // @id            merge_remote_projects
-// @version       1.4.7
+// @version       1.4.8
 // @description   Groups Codex's loaded remote session catalog under matching local projects.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -12,6 +12,7 @@
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
 // @codex-tested  26.1021.3705.0
+// @codex-tested  26.1023.6123.0
 // ==/ClaudexUserScript==
 const scriptId = "merge_remote_projects";
 const stateKey = Symbol.for("claudex-yourself.merge-remote-projects");
@@ -108,11 +109,16 @@ const loadNativeCatalog = async () => {
   // catalog symbols. Validate the old adapter before choosing it: a reused
   // minifier name can still be exported while referring to an unrelated function.
   const legacyKeys = main[alias("Gtr", false)];
+  // 26.1023 moved navigation to the app navigation bridge and renamed the
+  // catalog bindings. Check the list's shape before accepting reused symbols.
+  const latestList = main[alias("sDi", false)];
+  const latest = typeof latestList === "function" && /conversationId/.test(String(latestList)) &&
+    /workspaceKind/.test(String(latestList)) && /\.byKey\.has/.test(String(latestList));
   // 26.1021 renamed the catalog and navigation bindings again.
   const updatedList = main[alias("fMi", false)];
   const updated = typeof updatedList === "function" && /conversationId/.test(String(updatedList)) &&
     /workspaceKind/.test(String(updatedList)) && /\.byKey\.has/.test(String(updatedList));
-  const currentList = updated ? updatedList : main[alias("BXi", false)];
+  const currentList = latest ? latestList : updated ? updatedList : main[alias("BXi", false)];
   const current = typeof currentList === "function" && /conversationId/.test(String(currentList)) &&
     /workspaceKind/.test(String(currentList)) && /\.byKey\.has/.test(String(currentList));
   // Preserve the separately tested Windows 26.1007.9446 adapter as well.
@@ -120,18 +126,19 @@ const loadNativeCatalog = async () => {
   const windows = !current && typeof main[windowsList] === "function" &&
     /conversationId/.test(String(main[windowsList])) && /workspaceKind/.test(String(main[windowsList]));
   const legacy = !current && !windows && Boolean(legacyKeys?.scope && legacyKeys?.resolve);
-  const keys = updated ? main[alias("tK")] : current ? main[alias("OZi")] : windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
+  const keys = latest ? main[alias("cq")] : updated ? main[alias("tK")] : current ? main[alias("OZi")] : windows ? main[alias("EF")] : legacy ? legacyKeys : main[alias("$Ki")];
   const list = current ? currentList : main[alias(windows ? "_F" : legacy ? "yF" : "qB")];
-  const conversation = updated ? main[alias("hj")] : current ? main[alias("Fcr")] : windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
-  const router = updated ? main[alias("Dk")] : current ? main[alias("CD")] : windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
-  const location = updated ? main[alias("Ak")] : current ? main[alias("HE")] : windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
+  const conversation = latest ? main[alias("wj")] : updated ? main[alias("hj")] : current ? main[alias("Fcr")] : windows ? imported("fc") : legacy ? imported("mc") : main[alias("ek")];
+  const router = latest ? main[alias("pA")] : updated ? main[alias("Dk")] : current ? main[alias("CD")] : windows ? imported("jf") : legacy ? imported("Nf") : main[alias("eh")];
+  const location = latest ? main[alias("Kg")] : updated ? main[alias("Ak")] : current ? main[alias("HE")] : windows ? imported("Ug") : legacy ? imported("Jg") : main[alias("ch")];
   if (!keys?.scope || typeof list !== "function" || !router?.scope || !location?.scope)
     throw new Error("Codex sidebar catalog adapter is incompatible with this build.");
   nativeCatalog = {
     read: () => list(get, get(keys)).filter(item => item.kind === "local").map(item => {
-      const fallback = item.summary ? null : get(conversation, { hostId: item.hostId || "local", threadId: item.conversationId });
+      const fallback = item.summary ? null : get(conversation, { hostId: item.hostId || "local",
+        ...(latest ? { conversationId: item.conversationId } : { threadId: item.conversationId }) });
       const summary = item.summary || (current ? fallback : fallback?.summary);
-      return { ...item, summary, title: summary?.title || item.conversationId };
+      return { ...item, summary, title: summary?.title || item.catalogTitle || item.conversationId };
     }),
     navigate: (id, hostId, projectId) => get(router).navigate(`/local/${encodeURIComponent(id)}?hostId=${encodeURIComponent(hostId)}`, {
       state: { ...get(location)?.state, sidebarThreadLocationId: `unified-project:${projectId}` }
@@ -195,6 +202,15 @@ const makeCopy = (source, session, projectId) => {
   const hostId = source.dataset.appActionSidebarThreadHostId || "remote";
   const info = threadInfo(source);
   copy.title = `${source.dataset.appActionSidebarThreadTitle || source.textContent.trim()}\nRemote: ${hostId}\n${info?.threadSummary?.cwd || info?.displayCwd || ""}`;
+  // Newer native project rows omit the environment glyph entirely. Grouped
+  // rows still need a host slot, including when custom device icons are off.
+  if (!copy.querySelector("svg.icon-2xs.no-drag,[aria-label='Remote session'] svg")) {
+    const slot = document.createElement("span");
+    slot.className = "claudex-merged-device-slot";
+    slot.setAttribute("aria-label", "Remote session");
+    slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
+    copy.firstElementChild?.append(slot);
+  }
   // Dispatch on the still-mounted original so React retains navigation, archive,
   // multi-selection, and context menu handlers with the original host identity.
   for (const type of ["click", "dblclick", "contextmenu"]) copy.addEventListener(type, event => {

@@ -7,6 +7,16 @@ async function exerciseIcons() {
   const device = controller.getDevices().find(device => device.os === "apple") || controller.getDevices()[0];
   check(device, "At least one remote device is available");
   const key = "claudex-yourself.remote-device-icons.v1", previous = localStorage.getItem(key);
+  const temporarySettings = document.createElement("div");
+  temporarySettings.hidden = true;
+  document.body.append(temporarySettings);
+  controller.renderSettings(temporarySettings);
+  for (const row of document.querySelectorAll("[data-app-action-sidebar-thread-row]")) {
+    if (!row.dataset.appActionSidebarThreadHostId?.startsWith("remote-control:")) continue;
+    check(row.querySelector("svg.icon-2xs.no-drag,[aria-label='Remote session'] svg"),
+      "Native remote rows retain a device glyph when Codex omits its globe");
+    check(row.querySelectorAll("[data-claudex-device-slot]").length <= 1, "Native fallback slots are not duplicated");
+  }
   const imagesFor = () => [...document.querySelectorAll("svg[data-claudex-device-icon]")]
     .filter(svg => svg.dataset.claudexDeviceIcon === device.id)
     .map(svg => svg.parentElement.querySelector(".claudex-device-icon-image"));
@@ -44,6 +54,7 @@ async function exerciseIcons() {
     controller.setChoice(device.id, "duck");
     controller.uninstall();
     check(document.querySelectorAll(".claudex-device-icon-image,svg[data-claudex-device-icon]").length === 0, "Uninstall restores native SVGs and removes all overlays");
+    check(document.querySelectorAll("[data-claudex-device-slot]").length === 0, "Uninstall removes owned fallback slots");
     check(getComputedStyle(currentRow()).display === "flex", "Settings remain styled while disabled");
     controller.install();
     check(imagesFor().length > 0, "Reinstall restores saved choices");
@@ -52,6 +63,7 @@ async function exerciseIcons() {
     controller.setChoice(device.id, "auto");
     if (previous === null) localStorage.removeItem(key); else localStorage.setItem(key, previous);
     window.dispatchEvent(new StorageEvent("storage", {key, newValue:previous}));
+    temporarySettings.remove();
   }
 }
 async function main() {

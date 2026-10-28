@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.4.5
+// @version       1.4.6
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -16,6 +16,7 @@
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
 // @codex-tested  26.1021.3705.0
+// @codex-tested  26.1023.6123.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.userscript-settings");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
@@ -444,7 +445,16 @@ const renderSources = () => {
   const last = snapshot?.lastInstall;
   if (last) {
     const errors = last.activationError || (Array.isArray(last.activation) ? last.activation.filter(x=>!x.activated).map(x=>x.error).join("; ") : "");
-    if (errors) sourceManager.append(sourceElement("p",`Activation failed for ${last.name} ${last.version}: ${errors}`,"claudex-muted"));
+    if (errors) {
+      const current = snapshot.scripts?.find(script => script.id === last.name);
+      const recovered = current && current.version !== last.version && registry.get(last.name)?.installed === true;
+      if (recovered) {
+        const history = sourceElement("details",undefined,"claudex-muted");
+        history.append(sourceElement("summary",`Previous activation of ${last.name} ${last.version} failed; current v${current.version} is running.`));
+        history.append(sourceElement("p",errors));
+        sourceManager.append(history);
+      } else sourceManager.append(sourceElement("p",`Activation failed for ${last.name} ${last.version}: ${errors}`,"claudex-muted"));
+    }
   }
   if (activeScroller && scrollTop !== undefined) activeScroller.scrollTop = scrollTop;
   if (focused) [...sourceManager.querySelectorAll("[data-focus-key]")].find(e=>e.dataset.focusKey===focused)?.focus({preventScroll:true});

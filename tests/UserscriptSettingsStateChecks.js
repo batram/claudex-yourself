@@ -38,5 +38,19 @@ for (const platform of ['Linux', 'Windows', 'macOS']) {
 }
 console.log('Settings state checks passed: platform support, unloaded scripts, actual enabled state, and custom scripts.');
 
+const diagnostics = source.slice(source.indexOf('  const last = snapshot?.lastInstall;'), source.indexOf('  if (activeScroller && scrollTop'));
+for (const [version, installed, historical] of [['1.4.8',true,true],['1.4.8',false,false],['1.4.4',true,false]]) {
+ const children = [];
+ vm.runInNewContext(diagnostics, {
+  snapshot:{lastInstall:{name:'merge_remote_projects',version:'1.4.4',activation:[{activated:false,error:'adapter unavailable'}]},scripts:[{id:'merge_remote_projects',version}]},
+  registry:new Map([['merge_remote_projects',{installed}]]),
+  sourceManager:{append(element){children.push(element)}},
+  sourceElement(tag,text){return {tag,text,children:[],append(element){this.children.push(element)}}}
+ });
+ assert.equal(children[0].tag,historical?'details':'p','Only a replaced, running script moves its previous failure into history');
+ assert.match(historical?children[0].children[1].text:children[0].text,/adapter unavailable/,'Keep the diagnostic available');
+}
+console.log('Settings activation history checks passed: recovered, still failing, and same-version cases.');
+
 }
 main().catch(error=>{console.error(error);process.exitCode=1});

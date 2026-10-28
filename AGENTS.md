@@ -36,7 +36,7 @@ The project relies on internal Codex Desktop behavior rather than a supported ex
 - A userscript is an async-function body, not a standalone JavaScript module. Top-level `return` is valid. For a lightweight syntax check, use:
 
   ```powershell
-  node -e "new Function(require('fs').readFileSync('scripts/<name>.js','utf8'))"
+  node -e "new (Object.getPrototypeOf(async function(){}).constructor)(require('fs').readFileSync('scripts/<name>.js','utf8'))"
   ```
 
 - Keep selectable userscripts reversible: expose controllers with working `install()` and `uninstall()` methods and register them in the shared userscript registry.

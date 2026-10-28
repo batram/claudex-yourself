@@ -29,8 +29,6 @@ async function checkPagination() {
   }
   check(getComputedStyle(more.querySelector(".text-base")).font ===
     getComputedStyle(nativeMore.querySelector(".text-base")).font, "Pagination label matches native typography");
-  check(Math.abs(more.getBoundingClientRect().x - nativeMore.getBoundingClientRect().x) < 1,
-    "Remote pagination aligns horizontally with native pagination");
   const heading = panel.querySelector(".claudex-merged-remote-label");
   const rows = () => [...panel.querySelectorAll("[data-claudex-merged-remote=row]")];
   const visible = () => rows().filter(row => !row.hidden).length;
@@ -47,6 +45,8 @@ async function checkPagination() {
   try {
     if (wasCollapsed) heading.click();
     if (wasExpanded) more.click();
+    check(Math.abs(more.getBoundingClientRect().x - nativeMore.getBoundingClientRect().x) < 1,
+      "Remote pagination aligns horizontally with native pagination");
     check(visible() === 5, "Preview contains five sessions");
     const checkIconColumn = () => {
       const iconPositions = rows().filter(row => !row.hidden).map(row => {
