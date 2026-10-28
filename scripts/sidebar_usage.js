@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Sidebar usage
 // @id            sidebar_usage
-// @version       1.4.10
+// @version       1.5.4
 // @description   Shows all available Codex usage limits in the sidebar or compact rail.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -14,12 +14,14 @@
 // @codex-tested  20770
 // @codex-tested  26.1016.6573.0
 // @codex-tested  26.1021.3705.0
+// @codex-tested  26.1023.6123.0
 // ==/ClaudexUserScript==
 const stateKey = Symbol.for("claudex-yourself.sidebar-usage");
 const registryKey = Symbol.for("claudex-yourself.userscript-registry");
 const preferencesKey = "claudex-yourself.userscripts.v1";
 const cacheKey = "claudex-yourself.sidebar-usage.v2";
 const visibilityKey = "claudex-yourself.sidebar-usage.visibility.v1";
+const nativeDisplayKey = "claudex-yourself.sidebar-usage.native-display.v1";
 window[stateKey]?.uninstall?.();
 
 const scriptId = "sidebar_usage";
@@ -39,6 +41,45 @@ let mountGeneration = 0;
 let navigationPending = false;
 let navigationError = "";
 let compact = false;
+const getNativeDisplay = () => localStorage.getItem(nativeDisplayKey) !== "false";
+const clearNativeDisplay = () => {
+  document.querySelectorAll(".claudex-usage-native-text").forEach(element => element.remove());
+  document.querySelectorAll(".claudex-usage-native-host").forEach(element => element.classList.remove("claudex-usage-native-host"));
+};
+const syncNativeDisplay = () => {
+  const buttons = getNativeDisplay() ? [...document.querySelectorAll('button[aria-label="Usage"]')] : [];
+  const active = new Set();
+  for (const button of buttons) {
+    // The native description follows the window currently shown by its meter.
+    const percentage = button.getAttribute("aria-description")?.match(/(\d+(?:\.\d+)?)%\s*left/i)?.[1];
+    if (percentage == null) continue;
+    active.add(button);
+    if (!button.classList.contains("claudex-usage-native-host")) button.classList.add("claudex-usage-native-host");
+    let text = button.querySelector(".claudex-usage-native-text");
+    if (!text) {
+      text = document.createElement("span");
+      text.className = "claudex-usage-native-text";
+      text.setAttribute("aria-hidden", "true");
+      const value = document.createElement("span");
+      value.className = "claudex-usage-native-value";
+      text.append(value);
+      button.appendChild(text);
+    }
+    const value = text.querySelector(".claudex-usage-native-value");
+    if (value.textContent !== percentage) value.textContent = percentage;
+  }
+  for (const button of document.querySelectorAll(".claudex-usage-native-host")) {
+    if (active.has(button)) continue;
+    button.classList.remove("claudex-usage-native-host");
+    button.querySelector(".claudex-usage-native-text")?.remove();
+  }
+  if (widget) widget.hidden = active.size > 0;
+};
+const setNativeDisplay = enabled => {
+  localStorage.setItem(nativeDisplayKey, String(Boolean(enabled)));
+  syncNativeDisplay();
+  notifyLimits();
+};
 
 const openUsageSettings = () => new Promise((resolve, reject) => {
   // Deliver to the renderer's message listener without importing private bundle exports.
@@ -262,6 +303,7 @@ const ensureWidget = () => {
     closePopover();
     insertionPoint.before(widget);
   }
+  syncNativeDisplay();
 };
 const queueMount = () => {
   if (mountQueued) return;
@@ -330,6 +372,10 @@ const install = () => {
   style = document.createElement("style");
   style.dataset.claudexSidebarUsage = "true";
   style.textContent = `
+    .claudex-sidebar-usage[hidden] { display:none!important; }
+    .claudex-usage-native-host { position:relative; }
+    .claudex-usage-native-host span:has(> svg[viewBox="0 0 28 28"]) { visibility:hidden; }
+    .claudex-usage-native-text { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; white-space:nowrap; font-family:inherit; font-size:10px; font-weight:600; line-height:14px; letter-spacing:0; font-variant-numeric:tabular-nums; color:var(--color-token-text-primary,currentColor); }
     .claudex-sidebar-usage { box-sizing:border-box; width:100%; flex:none; padding:12px 14px 14px; border-top:1px solid var(--color-token-border, rgba(127,127,127,.15)); color:var(--color-token-text-secondary); }
     .claudex-usage-toggle { display:none; align-items:center; flex-direction:column; justify-content:center; gap:1px; width:36px; height:38px; padding:0; border:0; border-radius:8px; background:transparent; color:var(--color-token-text-secondary, currentColor); cursor:pointer; }
     .claudex-usage-toggle span { font-size:9px; font-weight:600; line-height:10px; font-variant-numeric:tabular-nums; }
@@ -369,7 +415,7 @@ const install = () => {
   widget = undefined;
   ensureWidget();
   observer = new MutationObserver(queueMount);
-  observer.observe(document.body, { childList:true, subtree:true });
+  observer.observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:["aria-description", "aria-label"] });
   document.addEventListener("pointerdown", dismissPopover, true);
   refresh();
   refreshTimer = setInterval(refresh, 60000);
@@ -391,6 +437,7 @@ const uninstall = () => {
   widget?.remove();
   document.querySelectorAll(".claudex-sidebar-usage").forEach(element => element.remove());
   widget = undefined;
+  clearNativeDisplay();
   style?.remove();
   style = undefined;
   apiClient = undefined;
@@ -398,7 +445,7 @@ const uninstall = () => {
   return { installed:false };
 };
 
-const controller = { id:scriptId, install, uninstall, refresh, getAvailableLimits, setLimitVisible, get installed() { return Boolean(observer); } };
+const controller = { id:scriptId, install, uninstall, refresh, getAvailableLimits, setLimitVisible, getNativeDisplay, setNativeDisplay, get installed() { return Boolean(observer); } };
 window[stateKey] = controller;
 (window[registryKey] ??= new Map()).set(scriptId, controller);
 window.dispatchEvent(new CustomEvent("claudex-userscript-registered", { detail:{ id:scriptId } }));

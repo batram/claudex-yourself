@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.4.6
+// @version       1.5.0
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -510,6 +510,23 @@ const refreshOptions = () => renderSources();
 const renderUsageOptions = () => {
   if (!usageOptions) return;
   const controller = registry.get("sidebar_usage");
+  let nativeRow = usageOptions.querySelector(".claudex-usage-native-option");
+  if (!nativeRow) {
+    nativeRow = sourceElement("div",undefined,"claudex-userscript-row claudex-usage-native-option");
+    const name = sourceElement("span","Percentage on native usage icon","claudex-userscript-name");
+    const label = sourceElement("label",undefined,"claudex-userscript-switch");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.setAttribute("aria-label","Percentage on native usage icon");
+    input.addEventListener("change", () => registry.get("sidebar_usage")?.setNativeDisplay?.(input.checked));
+    label.append(input,document.createElement("span"));
+    nativeRow.append(name,label);
+    const help = sourceElement("p","Centers the percentage on the Codex usage icon and hides the separate Sidebar usage entry. Turn off to use the separate entry.","claudex-muted");
+    usageOptions.prepend(nativeRow,help);
+  }
+  const nativeInput = nativeRow.querySelector("input");
+  nativeInput.checked = controller?.getNativeDisplay?.() ?? true;
+  nativeInput.disabled = controller?.installed !== true || !controller?.setNativeDisplay;
   const limits = controller?.getAvailableLimits?.() || [];
   const list = usageOptions.querySelector(".claudex-userscript-list");
   const existing = new Map([...list.children].map(row => [row.dataset.limitId, row]));
