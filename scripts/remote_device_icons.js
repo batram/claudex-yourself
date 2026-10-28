@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Remote device icons
 // @id            remote_device_icons
-// @version       1.0.2
+// @version       1.0.3
 // @description   Choose preset or uploaded icons for each remote device in native and grouped chat lists.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -56,7 +56,10 @@ const getDevices = () => [...devices.values()].map(device => ({ ...device,
 const restore = root => {
   for (const slot of root.querySelectorAll("[data-claudex-device-slot]")) slot.remove();
   for (const image of root.querySelectorAll(".claudex-device-icon-image")) image.remove();
-  for (const icon of root.querySelectorAll("svg[data-claudex-device-icon]")) icon.removeAttribute("data-claudex-device-icon");
+  for (const icon of root.querySelectorAll("svg[data-claudex-device-icon]")) {
+    icon.removeAttribute("data-claudex-device-icon");
+    icon.style.removeProperty("--claudex-device-image");
+  }
 };
 const repaint = () => {
   if (!observer) return;
@@ -83,25 +86,23 @@ const repaint = () => {
         slot.dataset.claudexDeviceSlot = "true";
         slot.setAttribute("aria-label", "Remote session");
         slot.innerHTML = '<svg aria-hidden="true" class="icon-2xs" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"><circle cx="8" cy="8" r="6"/><ellipse cx="8" cy="8" rx="2.5" ry="6"/><path d="M2 8h12"/></svg>';
-        rail.append(slot);
+        // The last child reserves room for the absolute hover/focus controls.
+        // Keep the device before it so the controls never cover the icon.
+        rail.insertBefore(slot, rail.lastElementChild);
         source = slot.querySelector("svg");
       }
     }
     if (!source) continue;
-    const parent = source.parentElement;
     const src = getIcon(device);
-    // React keeps ownership of its SVG. Overlay the image without moving or
-    // replacing React-owned nodes, including copies made by other userscripts.
-    let image = parent.querySelector(":scope > .claudex-device-icon-image");
     if (!src) {
-      source.removeAttribute("data-claudex-device-icon"); image?.remove(); continue;
+      source.removeAttribute("data-claudex-device-icon");
+      source.style.removeProperty("--claudex-device-image");
+      continue;
     }
+    // Paint within the native SVG's own box, independent of its parent's size.
+    // React retains its SVG and children; uninstall restores the original globe.
     source.dataset.claudexDeviceIcon = id;
-    if (!image) {
-      image = document.createElement("img"); image.className = "claudex-device-icon-image";
-      image.alt = ""; image.setAttribute("aria-hidden", "true"); parent.append(image);
-    }
-    if (image.getAttribute("src") !== src) image.src = src;
+    source.style.setProperty("--claudex-device-image", `url(${JSON.stringify(src)})`);
   }
   for (const [id, saved] of Object.entries(preferences)) {
     if (!devices.has(id) && isRemote(id)) devices.set(id, { id, name: saved.name || id, os: saved.os });
@@ -218,10 +219,10 @@ const uninstall = () => {
 const install = () => {
   uninstall();
   style = document.createElement("style");
-  style.textContent = `svg[data-claudex-device-icon]{opacity:0!important}
-    [data-claudex-device-slot]{display:flex;align-items:center;justify-content:center;flex:none;width:20px;height:20px;margin-inline-end:3px}
-    :has(>svg[data-claudex-device-icon]){position:relative}
-    .claudex-device-icon-image{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}`;
+  style.textContent = `svg[data-claudex-device-icon]{background:var(--claudex-device-image) center/contain no-repeat}
+    svg[data-claudex-device-icon]>*{visibility:hidden}
+    [data-claudex-device-slot]{display:flex;align-items:center;justify-content:center;flex:none;width:14px;height:14px;margin-inline-start:3px;pointer-events:none}
+    [data-claudex-device-slot]>svg{width:100%;height:100%}`;
   document.head.append(style);
   observer = new MutationObserver(schedule); repaint();
   window.addEventListener("storage", receivePreferences);
