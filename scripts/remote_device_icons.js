@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          Remote device icons
 // @id            remote_device_icons
-// @version       1.0.3
+// @version       1.0.4
 // @description   Choose preset or uploaded icons for each remote device in native and grouped chat lists.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -138,19 +138,24 @@ const upload = async (id, file) => {
   } finally { URL.revokeObjectURL(url); }
 };
 const optionsCss = `
-    [data-claudex-device-options]{margin-top:10px;padding-top:10px;border-top:1px solid var(--color-border-default,#8883)}
-    [data-claudex-device-options] h4{font-size:12px;margin:0 0 5px}
-    .claudex-device-option{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 0}
-    .claudex-device-preview{width:28px;height:28px;object-fit:contain}
-    .claudex-device-copy{flex:1;min-width:120px;display:flex;flex-direction:column}
-    .claudex-device-copy small{opacity:.55;font-size:10px;overflow-wrap:anywhere}
-    .claudex-device-option select{max-width:160px;font:inherit;color:inherit;background:var(--color-background-primary,transparent);border:1px solid #8885;border-radius:6px;padding:5px}
-    .claudex-device-upload{position:relative;overflow:hidden;border:1px solid #8885;border-radius:6px;padding:5px 8px;cursor:pointer}
-    .claudex-device-upload:focus-within{outline:2px solid var(--color-text-info,currentColor)}
+    [data-claudex-device-options]{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border,var(--color-token-border,#8883));font-size:12px;container-type:inline-size}
+    [data-claudex-device-options] h4{font-size:12px;font-weight:500;margin:0 0 2px}
+    .claudex-device-options-list{margin-top:6px}
+    .claudex-device-option{display:grid;grid-template-columns:20px minmax(80px,1fr) 144px auto;align-items:center;gap:6px 10px;padding:7px 0;font-size:12px}
+    .claudex-device-preview{width:20px;height:20px;object-fit:contain;grid-column:1;grid-row:1}
+    .claudex-device-copy{min-width:0;display:flex;flex-direction:column;grid-column:2;grid-row:1}
+    .claudex-device-name{font-size:13px;font-weight:500;line-height:18px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .claudex-device-copy small{color:var(--color-text-secondary,var(--color-token-text-secondary,#888));font-size:11px;line-height:16px}
+    .claudex-device-option select{box-sizing:border-box;width:144px;max-width:100%;min-width:0;height:28px;font-family:inherit;font-size:12px;line-height:18px;color:inherit;background-color:var(--color-background-panel,Canvas);border:1px solid var(--color-border,var(--color-token-border,#8884));border-radius:7px;padding:4px 24px 4px 8px;cursor:pointer;color-scheme:inherit}
+    .claudex-device-upload{box-sizing:border-box;position:relative;display:inline-flex;align-items:center;justify-content:center;height:28px;white-space:nowrap;overflow:hidden;border:1px solid var(--color-border,var(--color-token-border,#8884));border-radius:7px;padding:4px 8px;font-size:12px;line-height:18px;cursor:pointer}
+    .claudex-device-upload:hover{background:var(--color-primary-ghost-hover,#8882)}
+    .claudex-device-upload:focus-within{outline:2px solid var(--color-text-info,#4f7cff);outline-offset:2px}
     .claudex-device-upload input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}
-    .claudex-device-error{flex-basis:100%;margin:0;color:var(--color-text-danger,#c44)}
+    .claudex-device-error{grid-column:2 / -1;margin:0;color:var(--color-text-danger,#c44)}
     .claudex-device-error:empty{display:none}
-    [data-claudex-device-options][data-empty=true]:after{content:'Remote devices appear here after their chats load.';opacity:.6;font-size:12px}`;
+    [data-claudex-device-options][data-empty=true]:after{content:'Remote devices appear here after their chats load.';opacity:.6;font-size:12px}
+    @container (max-width:440px){.claudex-device-option{grid-template-columns:20px minmax(0,1fr) auto;row-gap:8px;padding:10px 0}.claudex-device-copy{grid-column:2 / -1}.claudex-device-option select{grid-column:2;grid-row:2;width:100%}.claudex-device-upload{grid-column:3;grid-row:2}}
+    @container (max-width:260px){.claudex-device-option{grid-template-columns:20px minmax(0,1fr)}.claudex-device-option select{grid-column:2}.claudex-device-upload{grid-column:2;grid-row:3;justify-self:start}}`;
 const renderSettings = container => {
   let optionsStyle = document.querySelector("style[data-claudex-device-options-style]");
   if (!optionsStyle) {
@@ -162,7 +167,7 @@ const renderSettings = container => {
   if (!container.querySelector(".claudex-device-options-list")) {
     const heading = document.createElement("h4"); heading.textContent = "Icons by device";
     const note = document.createElement("p"); note.className = "claudex-muted";
-    note.textContent = "Automatic uses the device's operating system when known. Upload an image up to 2 MB; a small PNG copy is saved locally. Choices apply to this Codex profile.";
+    note.textContent = "Use the device's default icon, choose a preset, or upload an image (up to 2 MB).";
     const list = document.createElement("div"); list.className = "claudex-device-options-list";
     container.append(heading, note, list);
   }
@@ -179,7 +184,7 @@ function renderMounted() {
         const preview = document.createElement("img"); preview.className = "claudex-device-preview"; preview.alt = "";
         const copy = document.createElement("div"); copy.className = "claudex-device-copy";
         const name = document.createElement("strong"); name.className = "claudex-device-name";
-        const detail = document.createElement("small"); detail.textContent = device.id;
+        const detail = document.createElement("small");
         copy.append(name, detail);
         const select = document.createElement("select"); select.setAttribute("aria-label", `Icon for ${device.name}`);
         select.dataset.focusKey = `device-icon-${device.id}`;
@@ -200,6 +205,8 @@ function renderMounted() {
         row.append(preview, copy, select, label, error); list.append(row);
       }
       row.querySelector(".claudex-device-name").textContent = device.name;
+      row.querySelector(".claudex-device-copy").title = device.id;
+      row.querySelector(".claudex-device-copy small").textContent = ({apple:"macOS",linux:"Linux",windows:"Windows"}[device.os]) || "Remote device";
       const preview = row.querySelector("img");
       if (device.icon) { if (preview.getAttribute("src") !== device.icon) preview.src = device.icon; preview.hidden = false; }
       else { preview.removeAttribute("src"); preview.hidden = true; }

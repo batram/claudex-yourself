@@ -1,7 +1,7 @@
 // ==ClaudexUserScript==
 // @name          User script settings
 // @id            userscript_settings
-// @version       1.5.0
+// @version       1.5.1
 // @description   Adds reversible user-script switches to Codex Settings.
 // @run-at        renderer-ready
 // @platform      windows, macos, linux
@@ -67,7 +67,7 @@ style.textContent = `
   .claudex-userscript-nav[aria-current='page'] { background-color:var(--color-primary-ghost-hover,var(--claudex-settings-selection,#8882)) !important; }
   .claudex-userscript-native-hidden { display:none !important; }
   .claudex-settings-scroll { flex:1 1 0%; min-height:0; min-width:0; overflow-y:auto; width:100%; }
-  .claudex-userscript-panel { box-sizing:border-box; margin:0 auto; width:100%; max-width:800px; padding:24px 20px 36px; color:inherit; }
+  .claudex-userscript-panel { box-sizing:border-box; margin:0 auto; width:100%; max-width:800px; padding:24px 20px 36px; color:inherit; font-size:13px; line-height:1.5; }
   .claudex-userscript-panel * { box-sizing:border-box; }
   .claudex-userscript-panel header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:16px; }
   .claudex-userscript-panel h1 { margin:0; font-size:22px; line-height:1.3; font-weight:600; letter-spacing:-.5px; }
@@ -94,7 +94,8 @@ style.textContent = `
   .claudex-script-card[data-disabled=true] { background:transparent; }
   .claudex-script-card[data-disabled=true] .claudex-card-copy { opacity:.65; }
   .claudex-schedule-row { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; margin-top:8px; font-size:12px; }
-  .claudex-userscript-panel select { max-width:100%; min-width:0; border:1px solid var(--color-border,var(--color-token-border,#8884)); border-radius:6px; padding:4px 24px 4px 8px; font:inherit; color:inherit; background-color:var(--color-background-panel,Canvas); cursor:pointer; color-scheme:inherit; }
+  .claudex-userscript-panel select { max-width:100%; min-width:0; height:28px; border:1px solid var(--color-border,var(--color-token-border,#8884)); border-radius:7px; padding:4px 24px 4px 8px; font-family:inherit; font-size:12px; line-height:18px; color:inherit; background-color:var(--color-background-panel,Canvas); cursor:pointer; color-scheme:inherit; }
+  .claudex-card-body > [data-claudex-controller-options] { margin-top:8px; padding-top:8px; border-top:1px solid var(--color-border,var(--color-token-border,#8883)); min-width:0; }
   .claudex-source-editor { padding:4px 0; }
   .claudex-source-editor > .claudex-schedule-row { margin-top:0; }
   @container (max-width:430px) {

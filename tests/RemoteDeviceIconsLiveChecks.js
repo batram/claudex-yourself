@@ -19,7 +19,7 @@ async function exerciseIcons() {
   }
   const imagesFor = () => [...document.querySelectorAll("svg[data-claudex-device-icon]")]
     .filter(svg => svg.dataset.claudexDeviceIcon === device.id)
-    .map(svg => svg.parentElement.querySelector(".claudex-device-icon-image"));
+    .map(svg => getComputedStyle(svg).backgroundImage);
   const waitFor = async (predicate, message) => {
     for (let attempt = 0; attempt < 40; attempt++) {
       if (predicate()) return;
@@ -31,7 +31,7 @@ async function exerciseIcons() {
     for (const preset of controller.presets) {
       const decoded = new Image(); decoded.src = preset.src; await decoded.decode();
       controller.setChoice(device.id, preset.id);
-      check(imagesFor().length > 0 && imagesFor().every(img => img?.getAttribute("src") === preset.src), `${preset.id} reaches all native and grouped rows`);
+      check(imagesFor().length > 0 && imagesFor().every(image => image.includes(preset.src)), `${preset.id} reaches all native and grouped rows`);
     }
     controller.setChoice(device.id, "native");
     check(imagesFor().length === 0, "Default globe removes replacements for this device");
@@ -45,7 +45,7 @@ async function exerciseIcons() {
     await waitFor(() => JSON.parse(localStorage.getItem(key))?.[device.id]?.choice === "custom", "File input completes upload");
     const saved = JSON.parse(localStorage.getItem(key))[device.id];
     check(saved.choice === "custom" && saved.customData.startsWith("data:image/png;base64,"), "File input stores a normalized PNG");
-    await waitFor(() => imagesFor().length > 0 && imagesFor().every(img => img?.getAttribute("src") === saved.customData), "Uploaded icon reaches rendered rows");
+    await waitFor(() => imagesFor().length > 0 && imagesFor().every(image => image.includes(saved.customData)), "Uploaded icon reaches rendered rows");
     const bad = new DataTransfer(); bad.items.add(new File(["no"], "test.html", {type:"text/html"}));
     const currentPicker = currentRow().querySelector("input[type=file]");
     currentPicker.files = bad.files; currentPicker.dispatchEvent(new Event("change", {bubbles:true}));
@@ -55,7 +55,7 @@ async function exerciseIcons() {
     controller.uninstall();
     check(document.querySelectorAll(".claudex-device-icon-image,svg[data-claudex-device-icon]").length === 0, "Uninstall restores native SVGs and removes all overlays");
     check(document.querySelectorAll("[data-claudex-device-slot]").length === 0, "Uninstall removes owned fallback slots");
-    check(getComputedStyle(currentRow()).display === "flex", "Settings remain styled while disabled");
+    check(getComputedStyle(currentRow()).display === "grid", "Settings remain styled while disabled");
     controller.install();
     check(imagesFor().length > 0, "Reinstall restores saved choices");
     return { presets: controller.presets.length, filePicker: true, invalidUpload: true, reversible: true, devices: controller.getDevices().length };

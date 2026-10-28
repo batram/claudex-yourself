@@ -1,7 +1,7 @@
 <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Claudex settings fixture</title>
 <style>
-:root {font:14px system-ui;color:#222;background:#fafafa;--color-token-border:#ddd;--color-token-text-secondary:#666;--color-background-panel:#fff;--color-primary-ghost-hover:#eee}
-:root.dark {color:#eee;background:#181818;--color-token-border:#444;--color-token-text-secondary:#aaa;--color-background-panel:#222;--color-primary-ghost-hover:#333}
+:root {font:14px system-ui;color-scheme:light;color:#222;background:#fafafa;--color-token-border:#ddd;--color-token-text-secondary:#666;--color-background-panel:#fff;--color-primary-ghost-hover:#eee}
+:root.dark {color-scheme:dark;color:#eee;background:#181818;--color-token-border:#444;--color-token-text-secondary:#aaa;--color-background-panel:#222;--color-primary-ghost-hover:#333}
 *{box-sizing:border-box} body{margin:0;height:100vh;display:grid;grid-template-rows:auto minmax(0,1fr)} #fixture-tools{padding:12px;display:flex;gap:12px;border-bottom:1px solid var(--color-token-border)}
 #layout{display:flex;min-height:0} nav{width:230px;flex:none;padding:16px;border-right:1px solid var(--color-token-border)} nav button{display:flex;align-items:center;gap:8px;border:0;border-radius:8px;background:transparent;color:inherit;width:100%;padding:10px;text-align:left} nav svg{flex:none} main{display:flex;flex-direction:column;overflow:hidden;flex:1;min-height:0;min-width:0}.fixture-toolbar{height:32px;flex:none;border-bottom:1px solid var(--color-token-border)}.overflow-y-auto{overflow-y:auto;flex:1;min-height:0} button{cursor:pointer} input{color:inherit;background:transparent} .text-fade-truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:600px){nav{width:64px;padding:8px}nav span{display:none}}
@@ -12,6 +12,11 @@
 (async()=>{
 const source=await(await fetch('/scripts/userscript_settings.js')).text();
 const registry=new Map(); window[Symbol.for('claudex-yourself.userscript-registry')]=registry;
+// Exercise the real device options renderer without a native remote connection.
+const devices=document.createElement('div');devices.hidden=true;
+devices.innerHTML='<div data-claudex-host-id="fixture:mac" title="/Users/demo/project"></div><div data-claudex-host-id="fixture:linux" title="/home/demo/project"></div>';
+document.body.append(devices);
+await new Function(await (await fetch('/scripts/remote_device_icons.js')).text())();
 for(const id of ['sidebar_usage','hide_pets_button','hide_invite_a_friend']) registry.set(id,{installed:true,install(){this.installed=true},uninstall(){this.installed=false}});
 const limits=[{id:'general',name:'General',visible:true},{id:'reserve',name:'Reserve',visible:false}];
 Object.assign(registry.get('sidebar_usage'),{getAvailableLimits(){return limits},setLimitVisible(id,value){limits.find(x=>x.id===id).visible=value;window.dispatchEvent(new Event('claudex-usage-limits-changed'))}});
@@ -21,6 +26,7 @@ document.querySelector('#disconnect').onclick=()=>{connected=!connected;document
 await new Function(source)();
 const snapshot={version:'0.3.0',claudexUrl:'https://example.test/claudex-release.json',scripts:[{id:'userscript_settings',name:'User script settings',version:'1.4.0',url:'https://example.test/settings.js',autoload:true},{id:'sidebar_usage',name:'Sidebar usage',version:'1.4.6',url:'https://example.test/usage.js',autoload:true},{id:'hide_invite_a_friend',name:'Hide Invite a friend',version:'1.1.0',url:'https://example.test/invite.js',autoload:true},{id:'hide_pets_button',name:'Hide Mini button',version:'1.2.0',url:'https://example.test/mini.js',autoload:true}]};
 snapshot.defaultSchedule={onStartup:true,intervalMinutes:0};
+snapshot.scripts.push({id:'remote_device_icons',name:'Remote device icons',version:'1.0.4',url:'https://example.test/icons.js',autoload:true});
 for(const script of snapshot.scripts){script.schedule={...snapshot.defaultSchedule};script.scheduleInherited=true;}
 setInterval(()=>{
  if(!connected)return;
